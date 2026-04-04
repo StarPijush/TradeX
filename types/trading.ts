@@ -23,11 +23,34 @@ export interface Position {
   image?: string;
 }
 
+export interface Trade {
+  id: string;
+  type: "BUY" | "SELL";
+  symbol: string;
+  quantity: number;
+  price: number;
+  timestamp: number;
+  profit?: number;
+}
+
 export interface TradingState {
   balance: number;
   positions: Position[];
+  trades: Trade[];
+  favorites: string[];
+  xp: number;
+  level: number;
+  streak: number;
+  bestStreak: number;
   setBalance: (balance: number) => void;
   setPositions: (positions: Position[]) => void;
+  setTrades: (trades: Trade[]) => void;
+  setFavorites: (favorites: string[]) => void;
+  setXP: (xp: number) => void;
+  setLevel: (level: number) => void;
+  addXP: (amount: number) => void;
+  updateStreak: (win: boolean) => void;
+  toggleFavorite: (symbol: string) => void;
 }
 
 export interface TradeResult {

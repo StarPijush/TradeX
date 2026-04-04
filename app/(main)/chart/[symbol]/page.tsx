@@ -2,7 +2,9 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useParams } from "next/navigation";
-import CandleChart, { Candle } from "@/components/trading/CandleChart";
+import CandleChart, { Candle, Drawing } from "@/components/trading/CandleChart";
+import DrawingToolbar, { DrawingTool } from "@/components/trading/DrawingToolbar";
+import IndicatorsMenu, { IndicatorType } from "@/components/trading/IndicatorsMenu";
 import { usePriceSimulation } from "@/lib/trading/usePriceSimulation";
 import { useTradingStore } from "@/store/useTradingStore";
 import { createTradingEngine } from "@/lib/trading/engine";
@@ -10,6 +12,7 @@ import { formatCurrency, formatPercent } from "@/lib/utils/format";
 import { generateOHLCData, calculatePriceChange } from "@/lib/trading/ohlc";
 import { useToast } from "@/components/ui/use-toast";
 import { Toaster } from "@/components/ui/toaster";
+import { Maximize2, Minimize2 } from "lucide-react";
 import type { TradeMode } from "@/types/trading";
 
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "1D"] as const;
@@ -21,13 +24,39 @@ export default function ChartPage() {
   const asset = assets.find((a) => a.symbol === symbol) ?? assets[0];
   const { balance, positions, setBalance, setPositions } = useTradingStore();
 
-  const [candles, setCandles] = useState<Candle[]>(() => generateOHLCData(asset.price, 100));
+  const [hasMounted, setHasMounted] = useState(false);
+  const [candles, setCandles] = useState<Candle[]>([]);
   const [currentPrice, setCurrentPrice] = useState(asset.price);
   const [timeframe, setTimeframe] = useState<(typeof TIMEFRAMES)[number]>("1D");
   const [qty, setQty] = useState(1);
   const [mode, setMode] = useState<TradeMode>("buy");
   const [isExecuting, setIsExecuting] = useState(false);
   const [priceFlash, setPriceFlash] = useState<"up" | "down" | null>(null);
+
+  // Pro features state
+  const [activeIndicators, setActiveIndicators] = useState<IndicatorType[]>([]);
+  const [activeTool, setActiveTool] = useState<DrawingTool>("crosshair");
+  const [drawings, setDrawings] = useState<Drawing[]>([]);
+
+  // Mobile Pro Mode / Orientation tracking
+  const [isLandscape, setIsLandscape] = useState(false);
+  const [manualFullscreen, setManualFullscreen] = useState(false); // allow forced fullscreen
+
+  useEffect(() => {
+    setHasMounted(true);
+    setCandles(generateOHLCData(asset.price, 100));
+    setCurrentPrice(asset.price);
+
+    const handleOrientationChange = () => {
+      setIsLandscape(window.matchMedia("(orientation: landscape)").matches);
+    };
+    
+    // Initial check
+    handleOrientationChange();
+
+    window.addEventListener("resize", handleOrientationChange);
+    return () => window.removeEventListener("resize", handleOrientationChange);
+  }, [asset.price, asset.symbol]);
 
   // Auto-clear price flash
   useEffect(() => {
@@ -97,13 +126,13 @@ export default function ChartPage() {
     setCurrentPrice(newPrice);
     
     // Update last candle close/high/low for realistic OHLC
-    setCandles(prev => {
-      const last = { ...prev.at(-1)! };
-      last.close = newPrice;
-      if (newPrice > last.high) last.high = newPrice;
-      if (newPrice < last.low) last.low = newPrice;
-      return [...prev.slice(0, -1), last];
-    });
+    // Only update state if needed to prevent excessive re-renders!
+    // We already mutate the internal data in CandleChart for fast paths,
+    // so we only update the React state here for the Top Bar OHLC display briefly.
+  };
+
+  const toggleIndicator = (ind: IndicatorType) => {
+    setActiveIndicators(prev => prev.includes(ind) ? prev.filter(i => i !== ind) : [...prev, ind]);
   };
 
   const OrderPanel = ({ isMobile = false }: { isMobile?: boolean }) => (
@@ -246,24 +275,28 @@ export default function ChartPage() {
     </div>
   );
 
+  const isProFullScreen = isLandscape || manualFullscreen;
+
   return (
-    <div style={{ background: "#0B0F14", minHeight: "100vh" }} className="pb-28">
+    <div 
+      className={`bg-[#0B0F14] ${isProFullScreen ? "fixed inset-0 z-[100]" : "min-h-screen pb-28"}`}
+    >
       {/* Workstation Top Bar - High Density */}
       <div
-        className="sticky top-12 z-40 bg-[#0B0F14] border-b border-[#1E2633] overflow-x-auto"
+        className={`${isProFullScreen ? "" : "sticky top-12"} z-40 bg-[#0B0F14] border-b border-[#1E2633] overflow-x-auto`}
         style={{ height: 48, display: "flex", alignItems: "center" }}
       >
-        <div style={{ width: "100%", maxWidth: 1400, margin: "0 auto", padding: "0 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ width: "100%", maxWidth: isProFullScreen ? "100%" : 1400, margin: "0 auto", padding: "0 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
               <span style={{ color: "#E6EDF3", fontWeight: 700, fontSize: 14, letterSpacing: "-0.3px" }}>{asset.symbol}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                 <span className="animate-pulse-green" style={{ width: 6, height: 6, borderRadius: "50%", background: "#22C55E" }} />
-                <span style={{ color: "#22C55E", fontSize: 9, fontWeight: 700, letterSpacing: "0.5px" }}>LIVE</span>
+                <span className="hidden sm:inline" style={{ color: "#22C55E", fontSize: 9, fontWeight: 700, letterSpacing: "0.5px" }}>LIVE</span>
               </div>
             </div>
             
-            <div style={{ display: "flex", flexDirection: "column", minWidth: 80 }}>
+            <div style={{ display: "flex", flexDirection: "column", minWidth: 60 }}>
               <span 
                 className="transition-colors duration-300"
                 style={{ 
@@ -276,12 +309,12 @@ export default function ChartPage() {
                 {formatCurrency(currentPrice, true)}
               </span>
               <span style={{ color: isUp ? "#22C55E" : "#EF4444", fontWeight: 700, fontSize: 10 }}>
-                {isUp ? "+" : ""}{formatPercent(priceChange)}
+                {formatPercent(priceChange)}
               </span>
             </div>
 
-            {/* OHLC Mini Stats */}
-            <div style={{ display: "flex", gap: 10, paddingLeft: 12, borderLeft: "1px solid #1E2633" }}>
+            {/* OHLC Mini Stats - Hidden on very small screens */}
+            <div className="hidden md:flex gap-2 lg:gap-10 pl-3 border-l border-[#1E2633]">
               {[
                 { l: "O", v: lastCandle.open },
                 { l: "H", v: lastCandle.high },
@@ -296,47 +329,91 @@ export default function ChartPage() {
             </div>
           </div>
 
-          {/* Segmented Timeframe Control */}
-          <div style={{ display: "flex", gap: 0, background: "#1E2633", padding: 2, borderRadius: 2 }}>
-            {TIMEFRAMES.map((tf) => (
-              <button
-                key={tf}
-                onClick={() => setTimeframe(tf)}
-                style={{
-                  padding: "4px 10px",
-                  border: "none",
-                  background: timeframe === tf ? "#0B0F14" : "transparent",
-                  color: timeframe === tf ? "#E6EDF3" : "#8B949E",
-                  fontWeight: 700,
-                  fontSize: 9,
-                  cursor: "pointer",
-                  transition: "all 0.2s"
-                }}
-              >
-                {tf}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 lg:gap-4">
+            <IndicatorsMenu activeIndicators={activeIndicators} onToggleIndicator={toggleIndicator} />
+            
+            {/* Segmented Timeframe Control */}
+            <div className="hidden sm:flex" style={{ gap: 0, background: "#1E2633", padding: 2, borderRadius: 2 }}>
+              {TIMEFRAMES.map((tf) => (
+                <button
+                  key={tf}
+                  onClick={() => setTimeframe(tf)}
+                  style={{
+                    padding: "4px 10px",
+                    border: "none",
+                    background: timeframe === tf ? "#0B0F14" : "transparent",
+                    color: timeframe === tf ? "#E6EDF3" : "#8B949E",
+                    fontWeight: 700,
+                    fontSize: 9,
+                    cursor: "pointer",
+                    transition: "all 0.2s"
+                  }}
+                >
+                  {tf}
+                </button>
+              ))}
+            </div>
+
+            {/* Fullscreen Toggle */}
+            <button 
+              onClick={() => setManualFullscreen(!manualFullscreen)}
+              className="lg:hidden p-1.5 text-[#8B949E] hover:text-[#E6EDF3] hover:bg-[#1E2633] rounded transition-colors"
+              title="Toggle Fullscreen"
+            >
+              {isProFullScreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
           </div>
         </div>
       </div>
 
       {/* Main layout: Chart + Trade Panel */}
-      <div style={{ maxWidth: 1400, margin: "0 auto" }} className="p-0">
-        <div className="flex flex-col lg:flex-row lg:gap-0 lg:border-l lg:border-r border-[#1E2633]">
-          <div className="flex-1 h-[65vh] lg:h-[520px] bg-[#0B0F14] border-b lg:border-b-0 lg:border-r border-[#1E2633] overflow-hidden">
-            <CandleChart symbol={asset.symbol} data={candles} onPriceUpdate={handlePriceUpdate} />
+      <div 
+        style={{ maxWidth: isProFullScreen ? "100%" : 1400, margin: "0 auto", height: isProFullScreen ? "calc(100vh - 48px)" : "auto" }} 
+        className="p-0 flex flex-col h-full"
+      >
+        <div className="flex flex-col lg:flex-row lg:gap-0 lg:border-l lg:border-r border-[#1E2633] flex-1 h-full">
+          <div className="flex flex-1 h-[65vh] lg:h-auto bg-[#0B0F14] border-b lg:border-b-0 lg:border-r border-[#1E2633] overflow-hidden">
+            {/* Drawing Toolbar */}
+            <DrawingToolbar 
+                activeTool={activeTool} 
+                onSelectTool={setActiveTool} 
+                onClearDrawings={() => setDrawings([])} 
+            />
+            {/* Chart Area */}
+            <div className="flex-1 w-full h-full relative border-l border-[#1E2633]">
+                {hasMounted && (
+                    <CandleChart 
+                        symbol={asset.symbol} 
+                        data={candles} 
+                        onPriceUpdate={handlePriceUpdate}
+                        indicators={activeIndicators}
+                        activeTool={activeTool}
+                        drawings={drawings}
+                        onDrawingsChange={setDrawings}
+                    />
+                )}
+            </div>
           </div>
 
-          <div className="w-full lg:w-[280px] bg-[#0B0F14]">
-            <div className="block lg:hidden">
-              <OrderPanel isMobile />
+          {!isProFullScreen && (
+            <div className="w-full lg:w-[280px] bg-[#0B0F14]">
+                <div className="block lg:hidden">
+                <OrderPanel isMobile />
+                </div>
+                <div className="hidden lg:block sticky top-28">
+                <OrderPanel />
+                </div>
             </div>
-            <div className="hidden lg:block sticky top-28">
-              <OrderPanel />
-            </div>
-          </div>
+          )}
         </div>
       </div>
+      
+      {/* Hide global bottom nav if in pro full screen */}
+      {isProFullScreen && (
+         <style dangerouslySetInnerHTML={{__html: `
+            nav.fixed.bottom-0 { display: none !important; }
+         `}} />
+      )}
 
       <Toaster />
     </div>

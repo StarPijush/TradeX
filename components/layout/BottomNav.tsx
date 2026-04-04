@@ -1,78 +1,110 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
+import { useRouter, usePathname } from "next/navigation";
+import { TrendingUp, PieChart, History, BarChart2 } from "lucide-react";
 
-const TABS = [
-  { id: "/simulator", icon: "📊", label: "Simulator" },
-  { id: "/chart/AAPL", icon: "📈", label: "Chart" },
-  { id: "/menu", icon: "☰", label: "Menu" },
-  { id: "/settings", icon: "⚙", label: "Settings" },
-];
-
-export default function BottomNav({ currentPath }: { currentPath: string }) {
+export default function BottomNav() {
   const router = useRouter();
+  const pathname = usePathname();
 
-  const isActive = (id: string) => {
-    if (id === "/") return currentPath === "/";
-    return currentPath.startsWith(id.split("/")[1] ? `/${id.split("/")[1]}` : id);
-  };
+  const navItems = [
+    { label: "Simulator", icon: <TrendingUp size={20} />, path: "/simulator" },
+    { label: "Portfolio", icon: <PieChart size={20} />, path: "/portfolio" },
+    { label: "Analytics", icon: <BarChart2 size={20} />, path: "/analytics" },
+    { label: "History", icon: <History size={20} />, path: "/history" },
+  ];
 
   return (
-    <nav
+    <div
       style={{
         position: "fixed",
         bottom: 0,
         left: 0,
         right: 0,
-        background: "var(--bg-secondary)",
-        borderTop: "1px solid var(--border)",
-        zIndex: 100,
+        height: 70,
+        background: "rgba(11, 15, 20, 0.8)",
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
+        borderTop: "1px solid rgba(30, 38, 51, 0.5)",
         display: "flex",
-        paddingBottom: "env(safe-area-inset-bottom, 0px)",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "0 12px",
+        zIndex: 50,
       }}
     >
-      {TABS.map((tab) => {
-        const active = isActive(tab.id);
+      {navItems.map((item) => {
+        const isActive = pathname === item.path;
         return (
-          <button
-            key={tab.id}
-            onClick={() => router.push(tab.id)}
+          <motion.div
+            key={item.path}
+            onClick={() => router.push(item.path)}
+            whileTap={{ scale: 0.9 }}
             style={{
               flex: 1,
-              padding: "8px 4px 6px",
-              background: "none",
-              border: "none",
-              cursor: "pointer",
+              height: "100%",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
-              gap: 2,
+              justifyContent: "center",
+              gap: 4,
+              cursor: "pointer",
+              position: "relative"
             }}
           >
-            <span style={{ fontSize: 18 }}>{tab.icon}</span>
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 500,
-                color: active ? "var(--text)" : "var(--text-muted)",
-              }}
-            >
-              {tab.label}
-            </span>
-            {active && (
-              <div
+            <div style={{ 
+              color: isActive ? "#58A6FF" : "#8B949E", 
+              transition: "color 0.2s ease",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              zIndex: 2
+            }}>
+              {item.icon}
+              <span style={{ fontSize: 10, fontWeight: 700, marginTop: 2 }}>
+                {item.label}
+              </span>
+            </div>
+
+            <AnimatePresence>
+              {isActive && (
+                <motion.div
+                  layoutId="nav-glow"
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  style={{
+                    position: "absolute",
+                    top: "15%",
+                    width: 40,
+                    height: 40,
+                    background: "rgba(88, 166, 255, 0.1)",
+                    filter: "blur(15px)",
+                    borderRadius: "50%",
+                    zIndex: 1
+                  }}
+                />
+              )}
+            </AnimatePresence>
+            
+            {isActive && (
+              <motion.div
+                layoutId="nav-indicator"
                 style={{
-                  width: 16,
-                  height: 2,
-                  borderRadius: 1,
-                  background: "var(--accent)",
-                  marginTop: 1,
+                  position: "absolute",
+                  bottom: 0,
+                  width: 24,
+                  height: 3,
+                  background: "#58A6FF",
+                  borderRadius: "2px 2px 0 0",
+                  boxShadow: "0 0 10px rgba(88, 166, 255, 0.5)"
                 }}
               />
             )}
-          </button>
+          </motion.div>
         );
       })}
-    </nav>
+    </div>
   );
 }

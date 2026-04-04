@@ -16,7 +16,7 @@ export default function MainLayout({
     <div className="min-h-screen" style={{ background: "var(--bg)" }}>
       <Navbar />
       <main style={{ paddingBottom: 72 }}>{children}</main>
-      <BottomNav currentPath={pathname} />
+      <BottomNav />
     </div>
   );
 }

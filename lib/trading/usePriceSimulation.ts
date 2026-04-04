@@ -9,20 +9,20 @@ export function usePriceSimulation(): Asset[] {
     const interval = setInterval(() => {
       setAssets((prevAssets) =>
         prevAssets.map((asset) => {
-          // Simulate random price movements
-          const changePercent = (Math.random() - 0.5) * 2; // -1 to 1
+          // Simulate smaller, more frequent random price movements
+          const changePercent = (Math.random() - 0.5) * 0.15; // ±0.075% per tick
           const priceChange = (asset.price * changePercent) / 100;
           const newPrice = Math.max(asset.price + priceChange, 0.01);
 
           return {
             ...asset,
             price: parseFloat(newPrice.toFixed(2)),
-            priceChange: parseFloat(priceChange.toFixed(2)),
-            priceChangePercent: parseFloat(changePercent.toFixed(2)),
+            priceChange: parseFloat((asset.priceChange + priceChange).toFixed(2)),
+            priceChangePercent: parseFloat(((newPrice - MOCK_ASSETS.find(a => a.symbol === asset.symbol)!.price) / MOCK_ASSETS.find(a => a.symbol === asset.symbol)!.price * 100).toFixed(2)),
           };
         })
       );
-    }, 2000); // Update every 2 seconds
+    }, 1000); // Update every 1 second (faster ticks)
 
     return () => clearInterval(interval);
   }, []);

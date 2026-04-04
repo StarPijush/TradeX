@@ -1,8 +1,13 @@
-import { Asset, Position, TradeResult } from "@/types/trading";
+import { Asset, Position, TradeResult, Trade } from "@/types/trading";
 
 export interface TradingState {
   balance: number;
   positions: Position[];
+  trades?: Trade[];
+  xp: number;
+  level: number;
+  streak: number;
+  bestStreak: number;
 }
 
 export interface PnL {
@@ -59,9 +64,19 @@ export class TradingEngine {
         currentPrice: price,
       };
 
+      const newTrade: Trade = {
+        id: `trade_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        type: "BUY",
+        symbol,
+        quantity,
+        price,
+        timestamp: Date.now(),
+      };
+
       this.setState({
         balance: state.balance - totalCost,
         positions: state.positions.map((p) => (p.symbol === symbol ? updatedPosition : p)),
+        trades: [newTrade, ...(state.trades || [])],
       });
     } else {
       // Create new position
@@ -76,9 +91,22 @@ export class TradingEngine {
         image: asset.image,
       };
 
+      const newTrade: Trade = {
+        id: `trade_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        type: "BUY",
+        symbol,
+        quantity,
+        price,
+        timestamp: Date.now(),
+      };
+
+      const xpToGain = 10;
+      
       this.setState({
         balance: state.balance - totalCost,
         positions: [...state.positions, newPosition],
+        trades: [newTrade, ...(state.trades || [])],
+        xp: state.xp + xpToGain,
       });
     }
 
@@ -111,11 +139,42 @@ export class TradingEngine {
     const sellPrice = asset?.price || position.currentPrice;
     const totalProceeds = quantity * sellPrice;
 
+    const profit = (sellPrice - position.avgPrice) * quantity;
+
+    const newTrade: Trade = {
+      id: `trade_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      type: "SELL",
+      symbol: position.symbol,
+      quantity,
+      price: sellPrice,
+      timestamp: Date.now(),
+      profit: parseFloat(profit.toFixed(2)),
+    };
+
     if (quantity === position.quantity) {
       // Close the position entirely
+      const isWin = profit > 0;
+      const xpToGain = isWin ? 30 : 10; // 10 for trade + 20 for profit
+      
+      const newStreak = isWin 
+        ? (state.streak > 0 ? state.streak + 1 : 1)
+        : (state.streak < 0 ? state.streak - 1 : -1);
+      
+      const newBestStreak = Math.max(state.bestStreak, newStreak > 0 ? newStreak : 0);
+
+      const nextXp = state.xp + xpToGain;
+      const xpThreshold = state.level * 100;
+      const newLevel = nextXp >= xpThreshold ? state.level + 1 : state.level;
+      const finalXp = nextXp >= xpThreshold ? nextXp - xpThreshold : nextXp;
+
       this.setState({
         balance: state.balance + totalProceeds,
         positions: state.positions.filter((p) => p.id !== positionId),
+        trades: [newTrade, ...(state.trades || [])],
+        xp: finalXp,
+        level: newLevel,
+        streak: newStreak,
+        bestStreak: newBestStreak
       });
     } else {
       // Partial close
@@ -125,13 +184,23 @@ export class TradingEngine {
         currentPrice: sellPrice,
       };
 
+      const isWin = profit > 0;
+      const xpToGain = isWin ? 30 : 10;
+      
+      const nextXp = state.xp + xpToGain;
+      const xpThreshold = state.level * 100;
+      const newLevel = nextXp >= xpThreshold ? state.level + 1 : state.level;
+      const finalXp = nextXp >= xpThreshold ? nextXp - xpThreshold : nextXp;
+
       this.setState({
         balance: state.balance + totalProceeds,
         positions: state.positions.map((p) => (p.id === positionId ? updatedPosition : p)),
+        trades: [newTrade, ...(state.trades || [])],
+        xp: finalXp,
+        level: newLevel
       });
     }
 
-    const profit = (sellPrice - position.avgPrice) * quantity;
     const profitPercent = ((sellPrice - position.avgPrice) / position.avgPrice) * 100;
 
     return {
