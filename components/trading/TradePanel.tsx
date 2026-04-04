@@ -16,7 +16,7 @@ interface TradePanelProps {
 
 export default function TradePanel({ asset, assets, engine }: TradePanelProps) {
   const { toast } = useToast();
-  const { balance, positions, setBalance, setPositions } = useTradingStore();
+  const { balance, positions } = useTradingStore();
   const [qty, setQty] = useState(1);
   const [mode, setMode] = useState<TradeMode>("buy");
 
@@ -34,11 +34,8 @@ export default function TradePanel({ asset, assets, engine }: TradePanelProps) {
     }
 
     const freshEngine = createTradingEngine(
-      () => ({ balance, positions }),
-      (partial) => {
-        if (partial.balance !== undefined) setBalance(partial.balance);
-        if (partial.positions !== undefined) setPositions(partial.positions);
-      }
+      () => useTradingStore.getState(),
+      (partial) => useTradingStore.setState(partial)
     );
 
     const res =

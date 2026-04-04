@@ -22,7 +22,7 @@ export default function ChartPage() {
   const { toast } = useToast();
   const assets = usePriceSimulation();
   const asset = assets.find((a) => a.symbol === symbol) ?? assets[0];
-  const { balance, positions, setBalance, setPositions } = useTradingStore();
+  const { balance, positions } = useTradingStore();
 
   const [hasMounted, setHasMounted] = useState(false);
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -67,12 +67,9 @@ export default function ChartPage() {
   }, [priceFlash]);
 
   const engine = useMemo(() => createTradingEngine(
-    () => ({ balance, positions }),
-    (partial) => {
-      if (partial.balance !== undefined) setBalance(partial.balance);
-      if (partial.positions !== undefined) setPositions(partial.positions);
-    }
-  ), [balance, positions, setBalance, setPositions]);
+    () => useTradingStore.getState(),
+    (partial) => useTradingStore.setState(partial)
+  ), []);
 
   const priceChange = calculatePriceChange(candles);
   const isUp = priceChange >= 0;

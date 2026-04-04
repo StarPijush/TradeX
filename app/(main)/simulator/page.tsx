@@ -60,8 +60,8 @@ export default function SimulatorPage() {
       });
   }, [assets, filter, search, favorites]);
 
-  const handleSell = (position: import("@/types/trading").Position) => {
-    const res = engine.sell(position.id, position.quantity, assets);
+  const handleSell = (id: string, qty: number) => {
+    const res = engine.sell(id, qty, assets);
     toast({
       title: res.success ? "Trade Executed" : "Trade Failed",
       description: res.message,
