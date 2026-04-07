@@ -1,23 +1,30 @@
+import { memo } from "react";
 import { Position } from "@/types/trading";
-import { createTradingEngine } from "@/lib/trading/engine";
-import { formatCurrency, formatPercent } from "@/lib/utils/format";
+import { formatCurrency } from "@/lib/utils/format";
 import AnimateNumber from "@/components/ui/AnimateNumber";
 import { motion } from "framer-motion";
+import { useTradingStore } from "@/store/useTradingStore";
+import { createTradingEngine } from "@/lib/trading/engine";
+import { X } from "lucide-react";
 
 interface PositionCardProps {
   position: Position;
   onSell: (id: string, qty: number) => void;
-  engine: any;
+  engine: ReturnType<typeof createTradingEngine>;
+  livePrice?: number;
 }
 
-export default function PositionCard({ position, onSell, engine }: PositionCardProps) {
-  const { pnl, pnlPct } = engine.calcPnL(position);
+const PositionCard = memo(function PositionCard({ position, onSell, engine, livePrice }: PositionCardProps) {
+  const storePrice = useTradingStore((s) => s.prices?.[position.symbol]);
+  const currentPrice = storePrice ?? livePrice ?? position.currentPrice;
+
+  const { pnl, pnlPct } = engine.calculatePnL(position, currentPrice);
   const isProfit = pnl >= 0;
-  const currentValue = position.quantity * position.currentPrice;
+  const currentValue = position.entryPrice * position.quantity + pnl;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 5 }}
+      initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       whileHover={{ backgroundColor: "rgba(255,255,255,0.02)" }}
       style={{
@@ -25,63 +32,106 @@ export default function PositionCard({ position, onSell, engine }: PositionCardP
         alignItems: "center",
         justifyContent: "space-between",
         padding: "14px 16px",
-        borderBottom: "1px solid #1E2633",
+        borderBottom: "1px solid var(--border)",
         background: "transparent",
-        transition: "background 0.2s"
+        gap: 12,
       }}
     >
-      {/* Left - Symbol & Quantity Info */}
-      <div style={{ flex: 1 }}>
-        <div style={{ color: "#E6EDF3", fontWeight: 700, fontSize: 15, marginBottom: 2 }}>
-          {position.symbol}
+      {/* Left */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+          <span style={{ fontSize: 15, fontWeight: 800, color: "var(--text)" }}>
+            {position.symbol}
+          </span>
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 800,
+              padding: "2px 7px",
+              borderRadius: 4,
+              background:
+                position.side === "buy"
+                  ? "rgba(38,166,154,0.15)"
+                  : "rgba(239,83,80,0.15)",
+              color: position.side === "buy" ? "var(--green)" : "var(--red)",
+              border: `1px solid ${position.side === "buy" ? "rgba(38,166,154,0.25)" : "rgba(239,83,80,0.25)"}`,
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+            }}
+          >
+            {position.side === "buy" ? "Long" : "Short"}
+          </span>
         </div>
-        <div style={{ color: "#8B949E", fontSize: 11, fontWeight: 600 }}>
-          {position.quantity} units @ {formatCurrency(position.avgPrice, true)}
+        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>
+          {position.quantity} @ {formatCurrency(position.entryPrice, true)}
         </div>
+        {(position.stopLoss || position.takeProfit) && (
+          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+            {position.stopLoss && (
+              <span style={{ fontSize: 9, fontWeight: 700, color: "var(--red)" }}>
+                SL {formatCurrency(position.stopLoss)}
+              </span>
+            )}
+            {position.takeProfit && (
+              <span style={{ fontSize: 9, fontWeight: 700, color: "var(--green)" }}>
+                TP {formatCurrency(position.takeProfit)}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Right - Value & P&L Info */}
-      <div style={{ textAlign: "right", display: "flex", flexDirection: "column", gap: 2 }}>
-        <div style={{ color: "#E6EDF3", fontWeight: 700, fontSize: 15 }}>
-          <AnimateNumber value={currentValue} format={(v) => formatCurrency(v, true)} />
+      {/* Right */}
+      <div style={{ textAlign: "right" }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+          <AnimateNumber value={currentValue} format={(v) => formatCurrency(v, true)} flashColor={true} />
         </div>
-        <motion.div
-          animate={isProfit ? { scale: [1, 1.02, 1] } : { x: [0, -1, 1, 0] }}
-          transition={{ repeat: Infinity, duration: 3 }}
+        <div
           style={{
-            color: isProfit ? "#22C55E" : "#EF4444",
-            fontSize: 11,
-            fontWeight: 800,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            gap: 2
+            fontSize: 12,
+            fontWeight: 700,
+            color: isProfit ? "var(--green)" : "var(--red)",
+            fontVariantNumeric: "tabular-nums",
+            marginTop: 2,
           }}
         >
           {isProfit ? "+" : ""}
-          <AnimateNumber value={pnl} format={(v) => formatCurrency(v, true)} />
-          <span style={{ fontSize: 10, opacity: 0.8 }}>({formatPercent(pnlPct)})</span>
-        </motion.div>
+          <AnimateNumber value={pnl} format={(v) => formatCurrency(v, true)} flashColor={true} />
+          {" "}
+          <span style={{ fontSize: 10, opacity: 0.8 }}>({isProfit ? "+" : ""}{pnlPct.toFixed(2)}%)</span>
+        </div>
       </div>
-      
-      {/* Quick Sell Button (Optional but high engagement) */}
+
+      {/* Close button */}
       <motion.button
-        whileTap={{ scale: 0.9 }}
+        whileTap={{ scale: 0.88 }}
         onClick={() => onSell(position.id, position.quantity)}
         style={{
-          marginLeft: 16,
-          background: "rgba(239, 68, 68, 0.1)",
-          border: "1px solid rgba(239, 68, 68, 0.2)",
-          color: "#EF4444",
-          fontSize: 10,
-          fontWeight: 800,
-          padding: "4px 10px",
-          borderRadius: 4,
-          cursor: "pointer"
+          flexShrink: 0,
+          background: "rgba(239,68,68,0.08)",
+          border: "1px solid rgba(239,68,68,0.2)",
+          color: "var(--red)",
+          width: 32,
+          height: 32,
+          borderRadius: 8,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "all 0.15s",
         }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = "rgba(239,68,68,0.2)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = "rgba(239,68,68,0.08)";
+        }}
+        title="Close position"
       >
-        SELL
+        <X size={15} strokeWidth={2} />
       </motion.button>
     </motion.div>
   );
-}
+});
+
+export default PositionCard;

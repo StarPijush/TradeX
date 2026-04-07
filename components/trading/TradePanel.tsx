@@ -1,12 +1,18 @@
 "use client";
 
-import { useState } from "react";
-import { Asset } from "@/types/trading";
+import { memo, useCallback, useState, useRef, useMemo } from "react";
+import { Asset, OrderSide } from "@/types/trading";
 import { useTradingStore } from "@/store/useTradingStore";
 import { createTradingEngine } from "@/lib/trading/engine";
 import { formatCurrency } from "@/lib/utils/format";
 import { useToast } from "@/components/ui/use-toast";
-import type { TradeMode } from "@/types/trading";
+import { sound } from "@/lib/utils/sound";
+import FloatingEffect, { useFloatingEffect } from "@/components/ui/FloatingEffect";
+import { Loader2 } from "lucide-react";
+import OrderForm from "./panel/OrderForm";
+import TradeSuccessOverlay from "./panel/TradeSuccessOverlay";
+import OrderPanelSkeleton from "./panel/OrderPanelSkeleton";
+import { AnimatePresence, motion } from "framer-motion";
 
 interface TradePanelProps {
   asset: Asset | null;
@@ -14,236 +20,125 @@ interface TradePanelProps {
   engine: ReturnType<typeof createTradingEngine>;
 }
 
-export default function TradePanel({ asset, assets, engine }: TradePanelProps) {
+const TradePanel = memo(function TradePanel({ asset, assets, engine }: TradePanelProps) {
   const { toast } = useToast();
-  const { balance, positions } = useTradingStore();
+  const { balance } = useTradingStore();
   const [qty, setQty] = useState(1);
-  const [mode, setMode] = useState<TradeMode>("buy");
+  const [side, setSide] = useState<OrderSide>("buy");
+  const [sl, setSl] = useState<number | "">("");
+  const [tp, setTp] = useState<number | "">("");
+  
+  const [isLoading, setIsLoading] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const { items, trigger } = useFloatingEffect();
 
-  const total = asset ? asset.price * qty : 0;
-  const canAfford = total <= balance;
+  const handleExecute = useCallback(async () => {
+    if (!asset) return;
+    setIsLoading(true);
+    
+    const stopLoss = sl === "" ? undefined : Number(sl);
+    const takeProfit = tp === "" ? undefined : Number(tp);
 
-  const handleExecute = () => {
-    if (!asset) {
-      toast({ title: "No asset selected", description: "Select an asset from the watchlist", variant: "destructive" });
-      return;
-    }
-    if (qty < 1) {
-      toast({ title: "Invalid quantity", description: "Enter a quantity of at least 1", variant: "destructive" });
-      return;
-    }
+    const total = asset.price * qty;
+    const fee = total * 0.001;
 
-    const freshEngine = createTradingEngine(
-      () => useTradingStore.getState(),
-      (partial) => useTradingStore.setState(partial)
+    const res = await engine.executeMarketOrder(
+      asset.symbol, 
+      side, 
+      qty, 
+      assets, 
+      stopLoss, 
+      takeProfit
     );
 
-    const res =
-      mode === "buy"
-        ? freshEngine.buy(asset.symbol, qty, assets)
-        : (() => {
-            const pos = positions.find((p) => p.symbol === asset.symbol);
-            if (!pos) return { success: false, message: "No position to sell" };
-            return freshEngine.sell(pos.id, qty, assets);
-          })();
+    setIsLoading(false);
 
-    toast({
-      title: res.success ? "Trade Executed" : "Trade Failed",
-      description: res.message,
-      variant: res.success ? "default" : "destructive",
-    });
-  };
+    if (res.success) {
+      if (side === "buy") sound.playBuy();
+      else sound.playSell();
+
+      if (buttonRef.current) {
+        const rect = buttonRef.current.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top;
+        
+        trigger(`-$${fee.toFixed(2)} Fee`, x, y - 40, "#787B86");
+        if (side === "buy") {
+          trigger(`-$${total.toLocaleString()}`, x, y, "#EF5350");
+        } else {
+          trigger(`+$${total.toLocaleString()}`, x, y, "#26A69A");
+        }
+      }
+
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 1500);
+
+      toast({
+        title: "Order Executed",
+        description: res.message,
+      });
+    } else {
+      toast({
+        title: "Order Failed",
+        description: res.message,
+        variant: "destructive",
+      });
+    }
+  }, [asset, side, qty, sl, tp, assets, engine, trigger, toast]);
 
   return (
     <div
       style={{
-        background: "var(--card)",
+        background: "var(--bg-secondary)",
         border: "1px solid var(--border)",
-        borderRadius: 6,
-        padding: 16,
+        borderRadius: 12,
+        padding: 20,
         marginBottom: 12,
+        boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
+        position: "relative",
       }}
     >
-      {/* Header */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6 }}>
-          Order
-        </div>
-        {asset ? (
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-            <span style={{ color: "var(--text)", fontWeight: 600, fontSize: 14 }}>
-              {asset.symbol}
-            </span>
-            <span style={{ color: "var(--text)", fontWeight: 600, fontSize: 14 }}>
-              {formatCurrency(asset.price, true)}
-            </span>
-          </div>
+      <FloatingEffect items={items} />
+      <TradeSuccessOverlay show={showSuccess} />
+
+      <AnimatePresence mode="wait">
+        {!asset ? (
+          <motion.div
+            key="skeleton"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <OrderPanelSkeleton />
+          </motion.div>
         ) : (
-          <div style={{ color: "var(--text-dim)", fontSize: 12 }}>
-            Select an asset
-          </div>
+          <motion.div
+            key="form"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.3 }}
+          >
+            <OrderForm 
+              asset={asset}
+              side={side}
+              setSide={setSide}
+              qty={qty}
+              setQty={setQty}
+              sl={sl}
+              setSl={setSl}
+              tp={tp}
+              setTp={setTp}
+              balance={balance}
+              isLoading={isLoading}
+              handleExecute={handleExecute}
+            />
+          </motion.div>
         )}
-      </div>
-
-      {/* Buy / Sell toggle */}
-      <div
-        style={{
-          display: "flex",
-          gap: 1,
-          marginBottom: 12,
-        }}
-      >
-        {(["buy", "sell"] as TradeMode[]).map((m) => (
-          <button
-            key={m}
-            onClick={() => setMode(m)}
-            style={{
-              flex: 1,
-              padding: "8px 0",
-              border: "none",
-              cursor: "pointer",
-              fontWeight: 600,
-              fontSize: 12,
-              textTransform: "uppercase",
-              background:
-                mode === m
-                  ? m === "buy" ? "var(--green)" : "var(--red)"
-                  : "var(--bg)",
-              color: mode === m ? "#fff" : "var(--text-muted)",
-              borderRadius: m === "buy" ? "4px 0 0 4px" : "0 4px 4px 0",
-            }}
-          >
-            {m}
-          </button>
-        ))}
-      </div>
-
-      {/* Quantity */}
-      <div style={{ marginBottom: 12 }}>
-        <label
-          style={{
-            color: "var(--text-muted)",
-            fontSize: 11,
-            fontWeight: 500,
-            display: "block",
-            marginBottom: 4,
-          }}
-        >
-          Quantity
-        </label>
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <button
-            onClick={() => setQty(Math.max(1, qty - 1))}
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 4,
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              color: "var(--text)",
-              fontSize: 16,
-              cursor: "pointer",
-              fontWeight: 600,
-            }}
-          >
-            −
-          </button>
-          <input
-            type="number"
-            min={1}
-            value={qty}
-            onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))}
-            style={{
-              flex: 1,
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              borderRadius: 4,
-              padding: "6px 8px",
-              color: "var(--text)",
-              fontSize: 13,
-              fontWeight: 600,
-              textAlign: "center",
-              outline: "none",
-            }}
-          />
-          <button
-            onClick={() => setQty(qty + 1)}
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 4,
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              color: "var(--text)",
-              fontSize: 16,
-              cursor: "pointer",
-              fontWeight: 600,
-            }}
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      {/* Summary */}
-      {asset && (
-        <div
-          style={{
-            background: "var(--bg)",
-            borderRadius: 4,
-            padding: "10px 12px",
-            marginBottom: 12,
-            border: "1px solid var(--border)",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 12 }}>
-            <span style={{ color: "var(--text-muted)" }}>Price × Qty</span>
-            <span style={{ color: "var(--text)" }}>
-              {formatCurrency(asset.price, true)} × {qty}
-            </span>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-            <span style={{ color: "var(--text-muted)", fontWeight: 600 }}>Total</span>
-            <span
-              style={{
-                color: !canAfford && mode === "buy" ? "var(--red)" : "var(--text)",
-                fontWeight: 700,
-              }}
-            >
-              {formatCurrency(total, true)}
-            </span>
-          </div>
-          {!canAfford && mode === "buy" && (
-            <div style={{ color: "var(--red)", fontSize: 11, marginTop: 4, fontWeight: 500 }}>
-              Insufficient balance
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Execute */}
-      <button
-        onClick={handleExecute}
-        disabled={!asset}
-        style={{
-          width: "100%",
-          padding: "10px 0",
-          borderRadius: 4,
-          border: "none",
-          cursor: asset ? "pointer" : "not-allowed",
-          background: !asset
-            ? "var(--border)"
-            : mode === "buy"
-            ? "var(--green)"
-            : "var(--red)",
-          color: "#fff",
-          fontWeight: 700,
-          fontSize: 13,
-          opacity: asset ? 1 : 0.5,
-        }}
-      >
-        {mode === "buy" ? "Buy" : "Sell"} {asset?.symbol || ""}
-      </button>
+      </AnimatePresence>
     </div>
   );
-}
+});
+
+export default TradePanel;

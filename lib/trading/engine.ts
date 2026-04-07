@@ -1,19 +1,24 @@
-import { Asset, Position, TradeResult, Trade } from "@/types/trading";
+import { Asset, Position, TradeResult, Trade, Order, OrderSide, OrderType } from "@/types/trading";
 
 export interface TradingState {
   balance: number;
   positions: Position[];
-  trades?: Trade[];
+  orders: Order[];
+  trades: Trade[];
   xp: number;
   level: number;
   streak: number;
   bestStreak: number;
+  prices: Record<string, number>;
 }
 
 export interface PnL {
   pnl: number;
   pnlPct: number;
 }
+
+const FEE_RATE = 0.001; // 0.1%
+const SLIPPAGE_RATE = 0.0005; // 0.05%
 
 export class TradingEngine {
   private getState: () => TradingState;
@@ -27,220 +32,275 @@ export class TradingEngine {
     this.setState = setState;
   }
 
-  buy(symbol: string, quantity: number, assets: Asset[]): TradeResult {
+  /**
+   * Main entry point for market orders
+   */
+  async executeMarketOrder(
+    symbol: string, 
+    side: OrderSide, 
+    quantity: number, 
+    assets: Asset[],
+    sl?: number,
+    tp?: number
+  ): Promise<TradeResult> {
     const state = this.getState();
     const asset = assets.find((a) => a.symbol === symbol);
 
-    if (!asset) {
-      return {
-        success: false,
-        message: `Asset ${symbol} not found`,
-      };
+    if (!asset) return { success: false, message: "Asset not found" };
+
+    // 1. Calculate realistic entry price (with slippage)
+    const slippage = asset.price * SLIPPAGE_RATE;
+    const entryPrice = side === "buy" ? asset.price + slippage : asset.price - slippage;
+    
+    // 2. Calculate fees
+    const tradeValue = entryPrice * quantity;
+    const fee = tradeValue * FEE_RATE;
+    const totalRequired = side === "buy" ? tradeValue + fee : fee;
+
+    // 3. Balance check (Simplified: for shorting, we just check if they have enough for fees)
+    if (totalRequired > state.balance && side === "buy") {
+       return { success: false, message: "Insufficient balance" };
     }
 
-    const price = asset.price;
-    const totalCost = quantity * price;
+    // 4. Realistic Delay
+    await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 200));
 
-    if (totalCost > state.balance) {
-      return {
-        success: false,
-        message: `Insufficient balance. Required: $${totalCost.toFixed(2)}, Available: $${state.balance.toFixed(2)}`,
-      };
-    }
-
-    // Check if position already exists
-    const existingPosition = state.positions.find((p) => p.symbol === symbol);
-
-    if (existingPosition) {
-      // Update existing position - average the cost
-      const totalQuantity = existingPosition.quantity + quantity;
-      const totalValue = existingPosition.quantity * existingPosition.avgPrice + quantity * price;
-      const newAveragePrice = totalValue / totalQuantity;
-
-      const updatedPosition: Position = {
-        ...existingPosition,
-        quantity: totalQuantity,
-        avgPrice: parseFloat(newAveragePrice.toFixed(2)),
-        currentPrice: price,
-      };
-
-      const newTrade: Trade = {
-        id: `trade_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-        type: "BUY",
-        symbol,
-        quantity,
-        price,
-        timestamp: Date.now(),
-      };
-
-      this.setState({
-        balance: state.balance - totalCost,
-        positions: state.positions.map((p) => (p.symbol === symbol ? updatedPosition : p)),
-        trades: [newTrade, ...(state.trades || [])],
-      });
-    } else {
-      // Create new position
-      const newPosition: Position = {
-        id: `pos_${Date.now()}`,
-        symbol,
-        name: asset.name,
-        quantity,
-        avgPrice: price,
-        currentPrice: price,
-        category: asset.category,
-        image: asset.image,
-      };
-
-      const newTrade: Trade = {
-        id: `trade_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-        type: "BUY",
-        symbol,
-        quantity,
-        price,
-        timestamp: Date.now(),
-      };
-
-      const xpToGain = 10;
-      
-      this.setState({
-        balance: state.balance - totalCost,
-        positions: [...state.positions, newPosition],
-        trades: [newTrade, ...(state.trades || [])],
-        xp: state.xp + xpToGain,
-      });
-    }
-
-    return {
-      success: true,
-      message: `Bought ${quantity} ${symbol} @ $${price.toFixed(2)}`,
+    // 5. Create position
+    const newPosition: Position = {
+      id: `pos_${Date.now()}`,
+      symbol,
+      name: asset.name,
+      side,
+      quantity,
+      entryPrice: parseFloat(entryPrice.toFixed(2)),
+      currentPrice: asset.price,
+      stopLoss: sl,
+      takeProfit: tp,
+      status: "open",
+      pnl: 0,
+      category: asset.category,
+      image: asset.image,
+      openedAt: Date.now()
     };
-  }
-
-  sell(positionId: string, quantity: number, assets: Asset[]): TradeResult {
-    const state = this.getState();
-    const position = state.positions.find((p) => p.id === positionId);
-
-    if (!position) {
-      return {
-        success: false,
-        message: "Position not found",
-      };
-    }
-
-    if (quantity > position.quantity) {
-      return {
-        success: false,
-        message: `Cannot sell ${quantity} units. Only ${position.quantity} available.`,
-      };
-    }
-
-    // Find current price from assets
-    const asset = assets.find((a) => a.symbol === position.symbol);
-    const sellPrice = asset?.price || position.currentPrice;
-    const totalProceeds = quantity * sellPrice;
-
-    const profit = (sellPrice - position.avgPrice) * quantity;
 
     const newTrade: Trade = {
-      id: `trade_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-      type: "SELL",
-      symbol: position.symbol,
+      id: `trade_${Date.now()}`,
+      type: side === "buy" ? "BUY" : "SELL",
+      side,
+      symbol,
       quantity,
-      price: sellPrice,
+      price: entryPrice,
       timestamp: Date.now(),
-      profit: parseFloat(profit.toFixed(2)),
+      fee
     };
 
-    if (quantity === position.quantity) {
-      // Close the position entirely
-      const isWin = profit > 0;
-      const xpToGain = isWin ? 30 : 10; // 10 for trade + 20 for profit
-      
-      const newStreak = isWin 
-        ? (state.streak > 0 ? state.streak + 1 : 1)
-        : (state.streak < 0 ? state.streak - 1 : -1);
-      
-      const newBestStreak = Math.max(state.bestStreak, newStreak > 0 ? newStreak : 0);
+    this.setState({
+      balance: state.balance - totalRequired,
+      positions: [...state.positions, newPosition],
+      trades: [newTrade, ...state.trades],
+      xp: state.xp + 10
+    });
 
-      const nextXp = state.xp + xpToGain;
-      const xpThreshold = state.level * 100;
-      const newLevel = nextXp >= xpThreshold ? state.level + 1 : state.level;
-      const finalXp = nextXp >= xpThreshold ? nextXp - xpThreshold : nextXp;
-
-      this.setState({
-        balance: state.balance + totalProceeds,
-        positions: state.positions.filter((p) => p.id !== positionId),
-        trades: [newTrade, ...(state.trades || [])],
-        xp: finalXp,
-        level: newLevel,
-        streak: newStreak,
-        bestStreak: newBestStreak
-      });
-    } else {
-      // Partial close
-      const updatedPosition: Position = {
-        ...position,
-        quantity: position.quantity - quantity,
-        currentPrice: sellPrice,
-      };
-
-      const isWin = profit > 0;
-      const xpToGain = isWin ? 30 : 10;
-      
-      const nextXp = state.xp + xpToGain;
-      const xpThreshold = state.level * 100;
-      const newLevel = nextXp >= xpThreshold ? state.level + 1 : state.level;
-      const finalXp = nextXp >= xpThreshold ? nextXp - xpThreshold : nextXp;
-
-      this.setState({
-        balance: state.balance + totalProceeds,
-        positions: state.positions.map((p) => (p.id === positionId ? updatedPosition : p)),
-        trades: [newTrade, ...(state.trades || [])],
-        xp: finalXp,
-        level: newLevel
-      });
-    }
-
-    const profitPercent = ((sellPrice - position.avgPrice) / position.avgPrice) * 100;
-
-    return {
-      success: true,
-      message: `Sold ${quantity} ${position.symbol} @ $${sellPrice.toFixed(2)} | Profit: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)} (${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(2)}%)`,
+    return { 
+      success: true, 
+      message: `${side === "buy" ? "Bought" : "Sold"} ${quantity} ${symbol} @ $${entryPrice.toFixed(2)}` 
     };
   }
 
-  calcPnL(position: Position): PnL {
-    // Prevent division by zero
-    if (!position.avgPrice || position.avgPrice <= 0) {
-      return { pnl: 0, pnlPct: 0 };
+  /**
+   * Place a limit order
+   */
+  placeLimitOrder(
+    symbol: string,
+    side: OrderSide,
+    price: number,
+    quantity: number,
+    sl?: number,
+    tp?: number
+  ): TradeResult {
+    const newOrder: Order = {
+      id: `ord_${Date.now()}`,
+      symbol,
+      side,
+      type: "limit",
+      price,
+      quantity,
+      stopLoss: sl,
+      takeProfit: tp,
+      status: "pending",
+      timestamp: Date.now()
+    };
+
+    this.setState({
+      orders: [...this.getState().orders, newOrder]
+    });
+
+    return { success: true, message: `Limit ${side} order placed at $${price}` };
+  }
+
+  /**
+   * Automated monitoring of SL/TP and Limit Orders
+   * Should be called on every price tick from the chart
+   */
+  async checkTick(symbol: string, price: number, assets: Asset[]) {
+    const state = this.getState();
+    const { positions, orders, balance, trades } = state;
+
+    let updatedBalance = balance;
+    let updatedPositions = [...positions];
+    let updatedOrders = [...orders];
+    let updatedTrades = [...trades];
+
+    // 1. Check Limit Orders
+    for (let i = updatedOrders.length - 1; i >= 0; i--) {
+      const order = updatedOrders[i];
+      if (order.symbol !== symbol || order.status !== "pending") continue;
+
+      const hit = order.side === "buy" ? price <= order.price : price >= order.price;
+      
+      if (hit) {
+        // Execute limit as market
+        const res = await this.executeMarketOrder(symbol, order.side, order.quantity, assets, order.stopLoss, order.takeProfit);
+        if (res.success) {
+          updatedOrders.splice(i, 1);
+        }
+      }
+    }
+
+    // 2. Check SL / TP for Open Positions
+    for (let i = updatedPositions.length - 1; i >= 0; i--) {
+      const pos = updatedPositions[i];
+      if (pos.symbol !== symbol || pos.status !== "open") continue;
+
+      let trigger = null;
+      if (pos.side === "buy") {
+        if (pos.stopLoss && price <= pos.stopLoss) trigger = "Stop Loss";
+        if (pos.takeProfit && price >= pos.takeProfit) trigger = "Take Profit";
+      } else {
+        if (pos.stopLoss && price >= pos.stopLoss) trigger = "Stop Loss";
+        if (pos.takeProfit && price <= pos.takeProfit) trigger = "Take Profit";
+      }
+
+      if (trigger) {
+        // Close position
+        const { pnl } = this.calculatePnL(pos, price);
+        updatedBalance += (pos.side === "buy" ? (pos.quantity * price) : (pos.quantity * (pos.entryPrice + (pos.entryPrice - price)))); // Simplified exit logic
+        
+        const exitTrade: Trade = {
+          id: `trade_exit_${Date.now()}`,
+          type: pos.side === "buy" ? "SELL" : "BUY",
+          side: pos.side,
+          symbol,
+          quantity: pos.quantity,
+          price,
+          timestamp: Date.now(),
+          profit: pnl,
+          fee: (price * pos.quantity) * FEE_RATE
+        };
+
+        updatedBalance -= exitTrade.fee;
+        updatedPositions.splice(i, 1);
+        updatedTrades = [exitTrade, ...updatedTrades];
+      }
+    }
+
+    this.setState({
+      balance: updatedBalance,
+      positions: updatedPositions,
+      orders: updatedOrders,
+      trades: updatedTrades
+    });
+  }
+
+  async closePosition(positionId: string, assets: Asset[]): Promise<TradeResult> {
+    const state = this.getState();
+    const pos = state.positions.find(p => p.id === positionId);
+    if (!pos) return { success: false, message: "Position not found" };
+
+    const asset = assets.find(a => a.symbol === pos.symbol);
+    const exitPrice = asset ? asset.price : pos.currentPrice;
+    
+    // Slippage on exit
+    const slippage = exitPrice * SLIPPAGE_RATE;
+    const finalExitPrice = pos.side === "buy" ? exitPrice - slippage : exitPrice + slippage;
+
+    const { pnl } = this.calculatePnL(pos, finalExitPrice);
+    const fee = (finalExitPrice * pos.quantity) * FEE_RATE;
+
+    const exitTrade: Trade = {
+      id: `trade_close_${Date.now()}`,
+      type: pos.side === "buy" ? "SELL" : "BUY",
+      side: pos.side,
+      symbol: pos.symbol,
+      quantity: pos.quantity,
+      price: finalExitPrice,
+      timestamp: Date.now(),
+      profit: pnl,
+      fee
+    };
+
+    // For simplicity: balance += (investment + pnl - fees)
+    // Buy: cost was (qty * entry + fee). Exit: get (qty * exit - fee). 
+    // Profit = (exit - entry) * qty - fees.
+    // So new balance = old balance + (exit * qty) - fee? No, shorting is different.
+    
+    // Let's use a cleaner model:
+    // Buy side: Balance already deducted (cost + fee). On exit, add (qty * exit - fee).
+    // Sell side: Balance already deducted (fee). On exit, add (qty * (entry - exit) - fee)? No, that's not quite right for shorting without leverage.
+    
+    // Standard simulator model:
+    // Balance is your "cash".
+    // Market Buy: balance -= qty * entry + fee. Market Sell (to close): balance += qty * exit - fee.
+    // Market Sell (to open): balance -= fee. Market Buy (to close): balance += qty * (entry - exit) - fee.
+    
+    let balanceChange = 0;
+    if (pos.side === "buy") {
+      balanceChange = (pos.quantity * finalExitPrice) - fee;
+    } else {
+      // For shorting: PnL = (entry - exit) * qty - fee
+      balanceChange = (pos.entryPrice - finalExitPrice) * pos.quantity - fee;
+    }
+
+    this.setState({
+      balance: state.balance + balanceChange,
+      positions: state.positions.filter(p => p.id !== positionId),
+      trades: [exitTrade, ...state.trades]
+    });
+
+    return { success: true, message: `Position closed with $${pnl.toFixed(2)} P&L` };
+  }
+
+  calculatePnL(position: Position, currentPrice: number): { pnl: number, pnlPct: number } {
+    const { side, entryPrice, quantity } = position;
+    let pnl = 0;
+    
+    if (side === "buy") {
+      pnl = (currentPrice - entryPrice) * quantity;
+    } else {
+      pnl = (entryPrice - currentPrice) * quantity;
     }
     
-    const pnl = (position.currentPrice - position.avgPrice) * position.quantity;
-    const pnlPct = ((position.currentPrice - position.avgPrice) / position.avgPrice) * 100;
+    const pnlPct = (pnl / (entryPrice * quantity)) * 100;
     
     return { 
-      pnl: isFinite(pnl) ? pnl : 0, 
-      pnlPct: isFinite(pnlPct) ? pnlPct : 0 
+      pnl: parseFloat(pnl.toFixed(2)), 
+      pnlPct: parseFloat(pnlPct.toFixed(2)) 
     };
   }
 
-  calcTotalPnL(positions: Position[]): PnL {
+  calculateTotalPnL(positions: Position[], prices: Record<string, number>): { pnl: number, pnlPct: number } {
     let totalPnL = 0;
     let totalInvested = 0;
 
-    positions.forEach((position) => {
-      const { pnl } = this.calcPnL(position);
-      const invested = position.avgPrice * position.quantity;
+    positions.forEach(pos => {
+      const price = prices[pos.symbol] || pos.currentPrice;
+      const { pnl } = this.calculatePnL(pos, price);
       totalPnL += pnl;
-      totalInvested += invested;
+      totalInvested += (pos.entryPrice * pos.quantity);
     });
 
-    const totalPnLPct = totalInvested > 0 ? (totalPnL / totalInvested) * 100 : 0;
-
-    return { 
-      pnl: isFinite(totalPnL) ? totalPnL : 0, 
-      pnlPct: isFinite(totalPnLPct) ? totalPnLPct : 0 
-    };
+    const pnlPct = totalInvested > 0 ? (totalPnL / totalInvested) * 100 : 0;
+    return { pnl: totalPnL, pnlPct };
   }
 }
 

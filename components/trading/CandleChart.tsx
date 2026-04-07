@@ -1,25 +1,22 @@
-"use client";
-
-import { useEffect, useRef, useState, useMemo } from "react";
-import type { IChartApi, ISeriesApi, SeriesType, MouseEventParams } from "lightweight-charts";
-import { createChart, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode } from "lightweight-charts";
-import { motion, AnimatePresence } from "framer-motion";
+import { useEffect, useRef, useState, memo, useCallback } from "react";
+import type { IChartApi, ISeriesApi, MouseEventParams } from "lightweight-charts";
 import { calculateSMA, calculateEMA, calculateRSI, calculateMACD } from "@/lib/trading/indicators";
-import type { IndicatorType } from "./IndicatorsMenu";
-import type { DrawingTool } from "./DrawingToolbar";
+import { useTradingStore } from "@/store/useTradingStore";
+import { useChartStore, snapToGrid, type DrawingTool } from "@/store/useChartStore";
+import { useMarketStore } from "@/store/useMarketStore";
+import ChartTooltip, { type Candle } from "./chart/ChartTooltip";
+import ChartDrawings from "./chart/ChartDrawings";
+import ChartSkeleton from "./chart/ChartSkeleton";
+import { AnimatePresence, motion } from "framer-motion";
+import { chartStateCache } from "@/lib/trading/chartStateCache";
+import { useTransition } from "react";
 
-export interface Candle {
-  time: number | string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-}
+export { type Candle };
 
-interface Point {
-  time: number;
-  price: number;
-}
+/* ─────────────────────────── Types ─────────────────────────── */
+
+
+interface Point { time: number; price: number; }
 
 export interface Drawing {
   id: string;
@@ -31,506 +28,431 @@ export interface Drawing {
 
 interface CandleChartProps {
   symbol: string;
-  data: Candle[];
   onPriceUpdate?: (price: number) => void;
-  indicators?: IndicatorType[];
-  activeTool?: DrawingTool;
-  drawings?: Drawing[];
-  onDrawingsChange?: (drawings: Drawing[]) => void;
 }
 
-export default function CandleChart({ 
-  symbol, 
-  data, 
-  onPriceUpdate, 
-  indicators = [],
-  activeTool = "crosshair",
-  drawings = [],
-  onDrawingsChange
+const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+const FIB_COLORS = ["#787B86", "#F44336", "#FF9800", "#FFEB3B", "#4CAF50", "#2196F3", "#787B86"];
+
+const CandleChart = memo(function CandleChart({
+  symbol,
+  onPriceUpdate,
 }: CandleChartProps) {
   const containerWrapper = useRef<HTMLDivElement>(null);
   const mainChartContainer = useRef<HTMLDivElement>(null);
   const oscChartContainer = useRef<HTMLDivElement>(null);
 
+  // Chart & series instances
   const chart = useRef<IChartApi | null>(null);
   const oscChart = useRef<IChartApi | null>(null);
   const series = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  
-  // Indicator series refs
+  const volumeSeries = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const initialized = useRef(false);
+  const lastLoadedSymbol = useRef<string | null>(null);
+  const lastLoadedTimeframe = useRef<string | null>(null);
+
+  // Indicator refs
   const smaSeries = useRef<ISeriesApi<"Line"> | null>(null);
-  const emaSeries = useRef<ISeriesApi<"Line"> | null>(null);
+  const ema20Series = useRef<ISeriesApi<"Line"> | null>(null);
+  const ema50Series = useRef<ISeriesApi<"Line"> | null>(null);
   const rsiSeries = useRef<ISeriesApi<"Line"> | null>(null);
   const macdSeries = useRef<ISeriesApi<"Line"> | null>(null);
   const macdSignalSeries = useRef<ISeriesApi<"Line"> | null>(null);
   const macdHistSeries = useRef<ISeriesApi<"Histogram"> | null>(null);
 
+  // SL/TP line refs
+  const slLineRef = useRef<any>(null);
+  const tpLineRef = useRef<any>(null);
+
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const initialized = useRef(false);
+  const [hoveredCandle, setHoveredCandle] = useState<Candle | null>(null);
+  const [activeDrawing, setActiveDrawing] = useState<Drawing | null>(null);
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+
+  // Store subscriptions
+  const indicators = useChartStore((s) => s.activeIndicators);
+  const activeTool = useChartStore((s) => s.activeTool);
+  const timeframe = useChartStore((s) => s.timeframe);
+  const drawings = useChartStore((s) => s.drawings);
+  const addDrawing = useChartStore((s) => s.addDrawing);
+
+  // Market data subscription
+  const candleKey = `${symbol}_${timeframe}`;
 
   const hasOscillators = indicators.includes("RSI") || indicators.includes("MACD");
+  const showVolume = indicators.includes("Volume");
 
-  // Format data
-  const formattedData = useMemo(() => {
-    return data.map((candle) => ({
-      ...candle,
-      time: typeof candle.time === "number" ? Math.floor(candle.time) : candle.time,
-    }));
-  }, [data]);
+  const [isPending, startTransition] = useTransition();
 
-  // Handle initialization and main series update
+  // ─── CHART INITIALIZATION (Warm Start & Safe Reuse) ───
   useEffect(() => {
-    if (!mainChartContainer.current || !data.length || initialized.current) return;
+    if (!mainChartContainer.current) return;
 
-    try {
-      const chartInstance = createChart(mainChartContainer.current, {
-        layout: {
-          background: { color: "#0B0F14" },
-          textColor: "#8B949E",
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-          fontSize: 11,
-        },
-        timeScale: {
-          timeVisible: true,
-          secondsVisible: false,
-          borderColor: "#1E2633",
-        },
-        crosshair: {
-          mode: CrosshairMode.Normal,
-          vertLine: { color: "rgba(139, 148, 158, 0.4)", width: 1, labelBackgroundColor: "#1E2633", style: 2 },
-          horzLine: { color: "rgba(139, 148, 158, 0.4)", width: 1, labelBackgroundColor: "#1E2633", style: 2 },
-        },
-        grid: {
-          vertLines: { color: "#1E2633" },
-          horzLines: { color: "#1E2633" },
-        },
-        rightPriceScale: {
-          borderColor: "#1E2633",
-          autoScale: true,
-        },
-      });
+    let cleanupFn: (() => void) | undefined;
 
-      const candleSeries = chartInstance.addSeries(CandlestickSeries, {
-        upColor: "#22C55E",
-        downColor: "#EF4444",
-        borderUpColor: "#22C55E",
-        borderDownColor: "#EF4444",
-        wickUpColor: "#22C55E",
-        wickDownColor: "#EF4444",
-        priceLineVisible: true,
-        priceLineColor: "#E6EDF3",
-        priceLineStyle: 2,
-        priceLineWidth: 1,
-      });
+    const init = async () => {
+      // 1. WARM START: Get cached data for instant render
+      const cached = chartStateCache.get(symbol);
+      const initCandles = cached?.candles || useMarketStore.getState().candles[`${symbol}_${timeframe}`] || [];
 
-      candleSeries.setData(formattedData as any);
-      chartInstance.timeScale().fitContent();
+      try {
+        const { createChart, CandlestickSeries, HistogramSeries, CrosshairMode } = await import("lightweight-charts");
+        
+        const chartInstance = createChart(mainChartContainer.current as HTMLElement, {
+          layout: {
+            background: { color: "#06090F" },
+            textColor: "#4E5D6C",
+            fontFamily: "'Inter', sans-serif",
+            fontSize: 11,
+          },
+          timeScale: {
+            timeVisible: true,
+            borderColor: "rgba(255, 255, 255, 0.04)",
+            barSpacing: 12,
+            minBarSpacing: 4,
+          },
+          crosshair: {
+            mode: CrosshairMode.Normal,
+            vertLine: { color: "rgba(61, 148, 255, 0.2)", width: 1, style: 2 },
+            horzLine: { color: "rgba(61, 148, 255, 0.2)", width: 1, style: 2 },
+          },
+          grid: {
+            vertLines: { color: "rgba(255, 255, 255, 0.02)" },
+            horzLines: { color: "rgba(255, 255, 255, 0.02)" },
+          },
+          rightPriceScale: { borderColor: "rgba(255, 255, 255, 0.04)", autoScale: true },
+          watermark: {
+            visible: true,
+            fontSize: 32,
+            horzAlign: "center",
+            vertAlign: "center",
+            color: "rgba(255, 255, 255, 0.02)",
+            text: symbol.toUpperCase(),
+          },
+        } as any);
 
-      chart.current = chartInstance;
-      series.current = candleSeries;
-      initialized.current = true;
-      setIsLoading(false);
+        const candleSeries = chartInstance.addSeries(CandlestickSeries, {
+          upColor: "#26A69A", downColor: "#EF5350", borderVisible: false,
+          wickUpColor: "#26A69A", wickDownColor: "#EF5350",
+        });
 
-      const handleResize = () => {
-        if (!initialized.current) return;
-        if (mainChartContainer.current && chart.current) {
+        const volSeries = chartInstance.addSeries(HistogramSeries, {
+          priceFormat: { type: "volume" }, priceScaleId: "volume",
+        });
+        (chartInstance.priceScale("volume") as any).applyOptions({
+          scaleMargins: { top: 0.8, bottom: 0 }, drawTicks: false,
+        });
+
+        chart.current = chartInstance;
+        series.current = candleSeries;
+        volumeSeries.current = volSeries as any;
+        initialized.current = true;
+        
+        // INSTANT RENDERING of initial/cached data
+        if (initCandles.length > 0) {
+           series.current.setData(initCandles as any);
+           if (volumeSeries.current) {
+              volumeSeries.current.setData(initCandles.map(c => ({ time: c.time as any, value: c.volume || 0, color: c.close >= c.open ? "rgba(38, 166, 154, 0.25)" : "rgba(239, 83, 80, 0.25)" })));
+           }
+           chartInstance.timeScale().fitContent();
+        }
+
+        setIsLoading(false);
+
+        const handleResize = () => {
+          if (!mainChartContainer.current || !chart.current) return;
           chart.current.applyOptions({
             width: mainChartContainer.current.clientWidth,
             height: mainChartContainer.current.clientHeight,
           });
-        }
-        if (oscChartContainer.current && oscChart.current) {
-          oscChart.current.applyOptions({
-            width: oscChartContainer.current.clientWidth,
-            height: oscChartContainer.current.clientHeight,
-          });
-        }
-      };
-
-      const resizeObserver = new ResizeObserver(handleResize);
-      resizeObserver.observe(containerWrapper.current!);
-
-      return () => {
-        resizeObserver.disconnect();
-        chart.current?.remove();
-        chart.current = null;
-        oscChart.current?.remove();
-        oscChart.current = null;
-        initialized.current = false;
-      };
-    } catch (err) {
-      console.error(err);
-      setError("Failed to initialize chart");
-    }
-  }, [formattedData, data.length]); // Init only
-
-
-  // Live data effect
-  useEffect(() => {
-    if (!initialized.current || !series.current || data.length === 0) return;
-
-    const interval = setInterval(() => {
-      try {
-        const lastCandle = data[data.length - 1];
-        const randomChange = (Math.random() - 0.5) * 0.002;
-        const newClose = lastCandle.close * (1 + randomChange);
-
-        const newTime = typeof lastCandle.time === "number" ? lastCandle.time + 60 : Math.floor(Date.now() / 1000);
-
-        const newCandle = {
-          time: newTime as any,
-          open: lastCandle.close,
-          high: Math.max(lastCandle.close, newClose) * 1.001,
-          low: Math.min(lastCandle.close, newClose) * 0.999,
-          close: newClose,
         };
-
-        // Mutating data for persistence in this session without full re-render
-        data.push(newCandle);
-        if (data.length > 500) data.shift();
-
-        series.current?.update(newCandle as any);
-        onPriceUpdate?.(newClose);
+        const resizeObserver = new ResizeObserver(handleResize);
+        resizeObserver.observe(mainChartContainer.current as Element);
+        cleanupFn = () => {
+          resizeObserver.disconnect();
+          chartInstance.remove();
+          initialized.current = false;
+        };
       } catch (err) {
-        console.error(err);
+        console.error("Chart init error:", err);
       }
-    }, 1000);
+    };
 
-    return () => clearInterval(interval);
-  }, [data, onPriceUpdate]);
+    init();
+    return () => {
+      if (cleanupFn) cleanupFn();
+    };
+  }, [symbol, timeframe]); // Rebuild on symbol or timeframe change
 
-  // Indicator Overlay Sync Effect
+  // Update watermark on symbol change
+  useEffect(() => {
+    if (chart.current) {
+      chart.current.applyOptions({
+        watermark: { text: symbol.toUpperCase() }
+      } as any);
+    }
+  }, [symbol]);
+
+  // Indicator ref proxy for off-cycle updates
+  const indicatorsRef = useRef(indicators);
+  useEffect(() => { indicatorsRef.current = indicators; }, [indicators]);
+
+  // ─── DATA SYNC & INDICATORS (Zero React Re-Renders on Tick) ───
   useEffect(() => {
     if (!initialized.current || !chart.current) return;
-    
-    // SMA
-    if (indicators.includes("SMA")) {
-      if (!smaSeries.current) {
-        smaSeries.current = chart.current.addSeries(LineSeries, { color: "#3B82F6", lineWidth: 2, crosshairMarkerVisible: false });
-      }
-      const vals = calculateSMA(data, 20);
-      smaSeries.current.setData(data.map((d, i) => ({ time: d.time as any, value: vals[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
-    } else if (smaSeries.current) {
-      chart.current.removeSeries(smaSeries.current);
-      smaSeries.current = null;
-    }
 
-    // EMA
-    if (indicators.includes("EMA")) {
-      if (!emaSeries.current) {
-        emaSeries.current = chart.current.addSeries(LineSeries, { color: "#F59E0B", lineWidth: 2, crosshairMarkerVisible: false });
-      }
-      const vals = calculateEMA(data, 20);
-      emaSeries.current.setData(data.map((d, i) => ({ time: d.time as any, value: vals[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
-    } else if (emaSeries.current) {
-      chart.current.removeSeries(emaSeries.current);
-      emaSeries.current = null;
-    }
-  }, [indicators, data.length]); // Dependency on data.length to rerun indicators when new candles form
+    // Helper: Sync Indicators with UI Priority (Frame-based)
+    const syncIndicators = async (candles: Candle[], isMajorChange: boolean) => {
+        const activeInds = indicatorsRef.current;
+        if (!chart.current) return;
+        
+        const wantOsc = activeInds.includes("RSI") || activeInds.includes("MACD");
 
-  // Oscillators Container Effect
-  useEffect(() => {
-    if (!initialized.current || !oscChartContainer.current || !hasOscillators) {
-      if (oscChart.current) {
-        oscChart.current.remove();
-        oscChart.current = null;
-        rsiSeries.current = null;
-        macdSeries.current = null;
-        macdSignalSeries.current = null;
-        macdHistSeries.current = null;
-      }
-      return;
-    }
+        // Use startTransition for heavy calculations to avoid UI blocking
+        startTransition(() => {
+          (async () => {
+            const { LineSeries, HistogramSeries, createChart } = await import("lightweight-charts");
+            if (!chart.current) return;
 
-    if (!oscChart.current) {
-      oscChart.current = createChart(oscChartContainer.current, {
-        layout: {
-          background: { color: "#0B0F14" },
-          textColor: "#8B949E",
-          fontSize: 11,
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-        },
-        timeScale: { timeVisible: true, borderColor: "#1E2633" },
-        rightPriceScale: { borderColor: "#1E2633", autoScale: true },
-        grid: { vertLines: { color: "#1E2633" }, horzLines: { color: "#1E2633" } },
+            if (activeInds.includes("SMA")) {
+                if (!smaSeries.current) smaSeries.current = chart.current.addSeries(LineSeries, { color: "#2962FF", lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+                const vals = calculateSMA(candles, 20);
+                if (isMajorChange) smaSeries.current.setData(candles.map((d, i) => ({ time: d.time as any, value: vals[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
+                else smaSeries.current.update({ time: candles[candles.length - 1].time as any, value: vals[vals.length - 1] ?? NaN });
+            } else if (smaSeries.current) { chart.current.removeSeries(smaSeries.current); smaSeries.current = null; }
+
+            if (activeInds.includes("EMA20")) {
+                if (!ema20Series.current) ema20Series.current = chart.current.addSeries(LineSeries, { color: "#FF6D00", lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+                const vals = calculateEMA(candles, 20);
+                if (isMajorChange) ema20Series.current.setData(candles.map((d, i) => ({ time: d.time as any, value: vals[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
+                else ema20Series.current.update({ time: candles[candles.length - 1].time as any, value: vals[vals.length - 1] ?? NaN });
+            } else if (ema20Series.current) { chart.current.removeSeries(ema20Series.current); ema20Series.current = null; }
+
+            if (activeInds.includes("EMA50")) {
+                if (!ema50Series.current) ema50Series.current = chart.current.addSeries(LineSeries, { color: "#AB47BC", lineWidth: 1, lastValueVisible: false, priceLineVisible: false });
+                const vals = calculateEMA(candles, 50);
+                if (isMajorChange) ema50Series.current.setData(candles.map((d, i) => ({ time: d.time as any, value: vals[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
+                else ema50Series.current.update({ time: candles[candles.length - 1].time as any, value: vals[vals.length - 1] ?? NaN });
+            } else if (ema50Series.current) { chart.current.removeSeries(ema50Series.current); ema50Series.current = null; }
+
+            if (wantOsc) {
+                if (!oscChart.current && oscChartContainer.current) {
+                    oscChart.current = createChart(oscChartContainer.current, {
+                        autoSize: false,
+                        layout: { 
+                          background: { color: "#131722" }, 
+                          textColor: "#8B949E", 
+                          fontSize: 10,
+                          fontFamily: "'Inter', sans-serif",
+                        },
+                        timeScale: { visible: false },
+                        rightPriceScale: { borderColor: "#2A2E39", alignLabels: true },
+                        grid: { vertLines: { visible: false }, horzLines: { color: "rgba(42, 46, 57, 0.2)" } }
+                    });
+                    oscChart.current.applyOptions({
+                        width: oscChartContainer.current.clientWidth,
+                        height: oscChartContainer.current.clientHeight,
+                    });
+                    chart.current.timeScale().subscribeVisibleTimeRangeChange((r) => { if (r) oscChart.current?.timeScale().setVisibleRange(r); });
+                }
+                if (oscChart.current) {
+                    if (activeInds.includes("RSI")) {
+                        if (!rsiSeries.current) rsiSeries.current = oscChart.current.addSeries(LineSeries, { color: "#7B1FA2", lineWidth: 1 as any });
+                        const vals = calculateRSI(candles, 14);
+                        if (isMajorChange) rsiSeries.current.setData(candles.map((d, i) => ({ time: d.time as any, value: vals[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
+                        else rsiSeries.current.update({ time: candles[candles.length - 1].time as any, value: vals[vals.length - 1] ?? NaN });
+                    } else if (rsiSeries.current) { oscChart.current.removeSeries(rsiSeries.current); rsiSeries.current = null; }
+
+                    if (activeInds.includes("MACD")) {
+                        if (!macdSeries.current) macdSeries.current = oscChart.current.addSeries(LineSeries, { color: "#2962FF", lineWidth: 1 });
+                        if (!macdSignalSeries.current) macdSignalSeries.current = oscChart.current.addSeries(LineSeries, { color: "#FF6D00", lineWidth: 1 });
+                        if (!macdHistSeries.current) macdHistSeries.current = oscChart.current.addSeries(HistogramSeries, {});
+                        const macd = calculateMACD(candles);
+                        if (isMajorChange) {
+                            macdSeries.current.setData(candles.map((d, i) => ({ time: d.time as any, value: macd.macdLine[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
+                            macdSignalSeries.current.setData(candles.map((d, i) => ({ time: d.time as any, value: macd.signalLine[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
+                            macdHistSeries.current.setData(candles.map((d, i) => { const v = macd.histogram[i]; return { time: d.time as any, value: v ?? NaN, color: (v ?? 0) >= 0 ? "rgba(38, 166, 154, 0.5)" : "rgba(239, 83, 80, 0.5)" }; }).filter(d => !Number.isNaN(d.value)));
+                        } else {
+                            const lIdx = candles.length - 1;
+                            const lTime = candles[lIdx].time as any;
+                            macdSeries.current.update({ time: lTime, value: macd.macdLine[lIdx] ?? NaN });
+                            macdSignalSeries.current.update({ time: lTime, value: macd.signalLine[lIdx] ?? NaN });
+                            const v = macd.histogram[lIdx];
+                            macdHistSeries.current.update({ time: lTime, value: v ?? NaN, color: (v ?? 0) >= 0 ? "rgba(38, 166, 154, 0.5)" : "rgba(239, 83, 80, 0.5)" });
+                        }
+                    } else {
+                        if (macdSeries.current) { oscChart.current.removeSeries(macdSeries.current); macdSeries.current = null; }
+                        if (macdSignalSeries.current) { oscChart.current.removeSeries(macdSignalSeries.current); macdSignalSeries.current = null; }
+                        if (macdHistSeries.current) { oscChart.current.removeSeries(macdHistSeries.current); macdHistSeries.current = null; }
+                    }
+                }
+            } else if (oscChart.current) {
+                oscChart.current.remove();
+                oscChart.current = null;
+            }
+          })();
+        });
+    };
+
+    // ─── Live Market Sync ───
+    const unsub = useMarketStore.subscribe((state) => {
+      const candles = state.candles[`${symbol}_${timeframe}`] || [];
+      if (!candles.length || !series.current) return;
+
+      const isMajorChange = symbol !== lastLoadedSymbol.current || timeframe !== lastLoadedTimeframe.current;
+      
+      // Update Cache for Next Navigation
+      chartStateCache.set(symbol, timeframe, candles);
+
+      requestAnimationFrame(() => {
+        if (!series.current) return;
+        if (isMajorChange) {
+          series.current.setData(candles as any);
+          volumeSeries.current?.setData(candles.map(c => ({ time: c.time as any, value: c.volume || 0, color: c.close >= c.open ? "rgba(38, 166, 154, 0.25)" : "rgba(239, 83, 80, 0.25)" })));
+          chart.current?.timeScale().fitContent();
+          lastLoadedSymbol.current = symbol;
+          lastLoadedTimeframe.current = timeframe;
+          syncIndicators(candles, true);
+        } else {
+          const last = candles[candles.length - 1];
+          series.current.update(last as any);
+          volumeSeries.current?.update({ time: last.time as any, value: last.volume || 0, color: last.close >= last.open ? "rgba(38, 166, 154, 0.25)" : "rgba(239, 83, 80, 0.25)" });
+          syncIndicators(candles, false);
+        }
       });
-      // Sync time scales
-      if (chart.current) {
-        chart.current.timeScale().subscribeVisibleTimeRangeChange((range) => {
-          if (range && oscChart.current) {
-            oscChart.current.timeScale().setVisibleRange(range);
-          }
-        });
-        oscChart.current.timeScale().subscribeVisibleTimeRangeChange((range) => {
-          if (range && chart.current) {
-            chart.current.timeScale().setVisibleRange(range);
-          }
-        });
+
+      if (onPriceUpdate) {
+         const cp = state.prices[symbol];
+         if (cp) onPriceUpdate(cp);
       }
-    }
+    });
 
-    // RSI
-    if (indicators.includes("RSI")) {
-      if (!rsiSeries.current) {
-        rsiSeries.current = oscChart.current.addSeries(LineSeries, { color: "#8B5CF6", lineWidth: 2 });
-      }
-      const vals = calculateRSI(data, 14);
-      rsiSeries.current.setData(data.map((d, i) => ({ time: d.time as any, value: vals[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
-    } else if (rsiSeries.current) {
-      oscChart.current.removeSeries(rsiSeries.current);
-      rsiSeries.current = null;
-    }
+    return unsub;
+  }, [symbol, timeframe, indicators, hasOscillators, onPriceUpdate]);
 
-    // MACD
-    if (indicators.includes("MACD")) {
-      if (!macdSeries.current) macdSeries.current = oscChart.current.addSeries(LineSeries, { color: "#3B82F6", lineWidth: 1 });
-      if (!macdSignalSeries.current) macdSignalSeries.current = oscChart.current.addSeries(LineSeries, { color: "#F59E0B", lineWidth: 1 });
-      if (!macdHistSeries.current) macdHistSeries.current = oscChart.current.addSeries(HistogramSeries, {});
-
-      const macd = calculateMACD(data);
-      macdSeries.current.setData(data.map((d, i) => ({ time: d.time as any, value: macd.macdLine[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
-      macdSignalSeries.current.setData(data.map((d, i) => ({ time: d.time as any, value: macd.signalLine[i] ?? NaN })).filter(d => !Number.isNaN(d.value)));
-      macdHistSeries.current.setData(data.map((d, i) => {
-        const val = macd.histogram[i];
-        return { 
-          time: d.time as any, 
-          value: val ?? NaN, 
-          color: (val ?? 0) >= 0 ? "#22C55E88" : "#EF444488" 
-        };
-      }).filter(d => !Number.isNaN(d.value)));
-    } else {
-      if (macdSeries.current) { oscChart.current.removeSeries(macdSeries.current); macdSeries.current = null; }
-      if (macdSignalSeries.current) { oscChart.current.removeSeries(macdSignalSeries.current); macdSignalSeries.current = null; }
-      if (macdHistSeries.current) { oscChart.current.removeSeries(macdHistSeries.current); macdHistSeries.current = null; }
-    }
-
-  }, [indicators, hasOscillators, data.length]);
-
-
-  // Drawings Layer State
-  const [drawingState, setDrawingState] = useState<{
-    activeDrawing: Drawing | null;
-  }>({ activeDrawing: null });
-
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [mousePos, setMousePos] = useState<{x: number; y: number} | null>(null);
-
+  // ─── Interactivity: Tooltip & Crosshair ───
   useEffect(() => {
     if (!chart.current) return;
-
-    const mainChart = chart.current;
-    
-    // Disable crosshair if drawing tool is active to allow click events on SVG overlay
-    // Actually, lightweight-charts traps events. Let's subscribe to it.
-    const clickHandler = (param: MouseEventParams) => {
-        if (!param.point || !param.time || !series.current) return;
-        
-        const price = series.current.coordinateToPrice(param.point.y);
-        if (price === null) return;
-        
-        const logicalTime = param.time as number;
-
-        if (activeTool !== "crosshair") {
-          setDrawingState(prev => {
-            if (!prev.activeDrawing) {
-              // start drawing
-              const newDraw: Drawing = {
-                id: Date.now().toString(),
-                type: activeTool,
-                p1: { time: logicalTime, price },
-                color: "#E6EDF3"
-              };
-              return { activeDrawing: newDraw };
-            } else {
-              // finish drawing
-              const finished: Drawing = {
-                ...prev.activeDrawing,
-                p2: { time: logicalTime, price }
-              };
-              onDrawingsChange?.([...drawings, finished]);
-              return { activeDrawing: null };
-            }
-          });
-        }
-    };
+    const c = chart.current;
 
     const moveHandler = (param: MouseEventParams) => {
-        if (param.point) {
-            setMousePos({ x: param.point.x, y: param.point.y });
+      if (param.point) setMousePos({ x: param.point.x, y: param.point.y });
+      else setMousePos(null);
+
+      if (param.time && series.current) {
+        const data = param.seriesData.get(series.current) as Candle;
+        setHoveredCandle(data || null);
+      } else {
+        setHoveredCandle(null);
+      }
+    };
+
+    const clickHandler = (param: MouseEventParams) => {
+      if (!param.point || !param.time || !series.current || activeTool === "crosshair") return;
+      const price = series.current.coordinateToPrice(param.point.y);
+      if (price === null) return;
+      const time = param.time as number;
+      const snapped = snapToGrid(price);
+
+      if (!activeDrawing) {
+        const newDrawing: Drawing = {
+          id: Date.now().toString(),
+          type: activeTool,
+          p1: { time, price: snapped },
+          color: activeTool === "fibonacci" ? "#FFD700" : "#2962FF",
+        };
+        if (activeTool === "horizontal") {
+          addDrawing(newDrawing);
+          useChartStore.getState().setActiveTool("crosshair");
         } else {
-            setMousePos(null);
+          setActiveDrawing(newDrawing);
         }
+      } else {
+        addDrawing({ ...activeDrawing, p2: { time, price: snapped } });
+        setActiveDrawing(null);
+        useChartStore.getState().setActiveTool("crosshair");
+      }
     };
 
-    mainChart.subscribeCrosshairMove(moveHandler);
-    mainChart.subscribeClick(clickHandler);
-
+    c.subscribeCrosshairMove(moveHandler);
+    c.subscribeClick(clickHandler);
     return () => {
-        mainChart.unsubscribeCrosshairMove(moveHandler);
-        mainChart.unsubscribeClick(clickHandler);
+      c.unsubscribeCrosshairMove(moveHandler);
+      c.unsubscribeClick(clickHandler);
     };
-  }, [activeTool, drawings, onDrawingsChange]);
+  }, [activeTool, activeDrawing, addDrawing]);
 
-  // Convert logical drawing points to pixel coordinates
-  const renderDrawings = () => {
-    if (!chart.current || !series.current) return null;
+  // ─── SL/TP Lines ───
+  const positions = useTradingStore((s) => s.positions);
+  const activePosition = positions.find((p) => p.symbol === symbol && p.status === "open");
+
+  useEffect(() => {
+    if (!initialized.current || !series.current) return;
     const s = series.current;
-    const timeScale = chart.current.timeScale();
-    const rightPrice = s.priceScale();
+    if (slLineRef.current) { try { s.removePriceLine(slLineRef.current); } catch {} slLineRef.current = null; }
+    if (tpLineRef.current) { try { s.removePriceLine(tpLineRef.current); } catch {} tpLineRef.current = null; }
 
-    const getX = (t: number) => {
-        const coord = timeScale.timeToCoordinate(t as any);
-        return coord !== null ? coord : -10; // offscreen if invalid
-    };
-    const getY = (p: number) => {
-        const coord = s.priceToCoordinate(p);
-        return coord !== null ? coord : -10;
-    };
+    if (activePosition?.stopLoss) {
+      slLineRef.current = s.createPriceLine({ price: activePosition.stopLoss, color: "#EF5350", lineStyle: 2, lineWidth: 1, title: "SL" });
+    }
+    if (activePosition?.takeProfit) {
+      tpLineRef.current = s.createPriceLine({ price: activePosition.takeProfit, color: "#26A69A", lineStyle: 2, lineWidth: 1, title: "TP" });
+    }
+  }, [activePosition, symbol]);
 
-    const allDrawings = [...drawings, drawingState.activeDrawing].filter(Boolean) as Drawing[];
+  // Helpers for drawings
+  const getX = useCallback((t: number) => {
+    if (!chart.current) return -9999;
+    return chart.current.timeScale().timeToCoordinate(t as any) ?? -9999;
+  }, []);
 
-    return (
-      <svg
-        ref={svgRef}
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "100%",
-          pointerEvents: "none",
-          zIndex: 10
-        }}
-      >
-        {allDrawings.map(d => {
-            if (d.type === "horizontal") {
-                const y = getY(d.p1.price);
-                return <line key={d.id} x1="0" y1={y} x2="100%" y2={y} stroke={d.color || "#3B82F6"} strokeWidth="1.5" strokeDasharray="4 4" />;
-            }
-            if (d.type === "vertical") {
-                const x = getX(d.p1.time);
-                return <line key={d.id} x1={x} y1="0" x2={x} y2="100%" stroke={d.color || "#3B82F6"} strokeWidth="1.5" strokeDasharray="4 4" />;
-            }
-            if (d.type === "trendline" && d.p2) {
-                return (
-                    <line 
-                        key={d.id} 
-                        x1={getX(d.p1.time)} 
-                        y1={getY(d.p1.price)} 
-                        x2={getX(d.p2.time)} 
-                        y2={getY(d.p2.price)} 
-                        stroke={d.color || "#E6EDF3"} 
-                        strokeWidth="2" 
-                    />
-                );
-            }
-            // Active drawing incomplete state
-            if (d.type === "trendline" && !d.p2 && mousePos) {
-                 return (
-                    <line 
-                        key={d.id} 
-                        x1={getX(d.p1.time)} 
-                        y1={getY(d.p1.price)} 
-                        x2={mousePos.x} 
-                        y2={mousePos.y} 
-                        stroke={d.color || "#E6EDF3"} 
-                        strokeWidth="2" 
-                    />
-                );
-            }
-            if (d.type === "rectangle" && d.p2) {
-                const x1 = getX(d.p1.time);
-                const x2 = getX(d.p2.time);
-                const y1 = getY(d.p1.price);
-                const y2 = getY(d.p2.price);
-                const minX = Math.min(x1, x2);
-                const minY = Math.min(y1, y2);
-                const w = Math.abs(x2 - x1);
-                const h = Math.abs(y2 - y1);
-                return (
-                     <rect 
-                        key={d.id} 
-                        x={minX} y={minY} width={w} height={h} 
-                        fill="rgba(59, 130, 246, 0.1)"
-                        stroke={d.color || "#3B82F6"} 
-                        strokeWidth="1" 
-                    />
-                );
-            }
-            // Rectangle incomplete
-            if (d.type === "rectangle" && !d.p2 && mousePos) {
-                const x1 = getX(d.p1.time);
-                const y1 = getY(d.p1.price);
-                const minX = Math.min(x1, mousePos.x);
-                const minY = Math.min(y1, mousePos.y);
-                const w = Math.abs(mousePos.x - x1);
-                const h = Math.abs(mousePos.y - y1);
-                return (
-                     <rect 
-                        key={d.id} 
-                        x={minX} y={minY} width={w} height={h} 
-                        fill="rgba(59, 130, 246, 0.1)"
-                        stroke={d.color || "#3B82F6"} 
-                        strokeWidth="1" 
-                    />
-                );
-            }
-            return null;
-        })}
-      </svg>
-    );
-  };
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center w-full h-full text-[#EF4444] text-[13px] bg-[#0B0F14]">
-        Chart error: {error}
-      </div>
-    );
-  }
+  const getY = useCallback((p: number) => {
+    if (!series.current) return -9999;
+    return series.current.priceToCoordinate(p) ?? -9999;
+  }, []);
 
   return (
-    <div ref={containerWrapper} className="relative w-full h-full flex flex-col bg-[#0B0F14]">
-      <AnimatePresence>
-        {isLoading && (
+    <div ref={containerWrapper} className="relative w-full h-full flex flex-col bg-[#131722] overflow-hidden">
+      <AnimatePresence mode="wait">
+        {isLoading ? (
           <motion.div
-            key="shimmer"
+            key="skeleton"
             initial={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 z-10 bg-[#0B0F14] overflow-hidden"
+            transition={{ duration: 0.2 }}
+            className="absolute inset-0 z-[1000]"
           >
-            <motion.div
-              animate={{ x: ["-100%", "100%"] }}
-              transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
-              className="w-full h-full"
-              style={{
-                background: "linear-gradient(90deg, transparent 0%, rgba(88, 166, 255, 0.05) 50%, transparent 100%)",
-              }}
-            />
+            <ChartSkeleton />
           </motion.div>
-        )}
+        ) : null}
       </AnimatePresence>
       
-      {/* Tooltip Overlay Example (optional placeholder) */}
-      {/* 
-      <div className="absolute top-4 left-4 z-20 pointer-events-none text-[10px] text-[#8B949E]">
-         O: -- H: -- L: -- C: --
-      </div> 
-      */}
-
-      {/* Drawing Overlay */}
-      {!isLoading && initialized.current && renderDrawings()}
-
-      <div 
-        ref={mainChartContainer} 
-        style={{ flex: hasOscillators ? "0 0 70%" : "1", width: "100%" }}
-      />
-      {hasOscillators && (
-        <div 
-            ref={oscChartContainer} 
-            style={{ flex: "0 0 30%", width: "100%", borderTop: "1px solid #1E2633" }}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: isLoading ? 0 : 1 }}
+        transition={{ duration: 0.3, delay: 0.1 }}
+        className="w-full h-full flex flex-col"
+      >
+        <ChartDrawings 
+          drawings={drawings}
+          activeDrawing={activeDrawing}
+          mousePos={mousePos}
+          getX={getX}
+          getY={getY}
         />
-      )}
+
+        <ChartTooltip hoveredCandle={hoveredCandle} />
+        {hasOscillators && (
+          <div 
+            ref={oscChartContainer} 
+            style={{ flex: "0 0 25%", width: "100%", borderTop: "1px solid #1E2633", minHeight: 0 }} 
+          />
+        )}
+      </motion.div>
     </div>
   );
-}
+});
+
+export default CandleChart;
+

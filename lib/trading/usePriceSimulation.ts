@@ -1,31 +1,41 @@
-import { useState, useEffect } from "react";
+import { useMemo, useEffect } from "react";
 import { Asset } from "@/types/trading";
 import { MOCK_ASSETS } from "@/lib/data/symbols";
+import { useTradingStore } from "@/store/useTradingStore";
+import { useMarketStore } from "@/store/useMarketStore";
 
+/**
+ * usePriceSimulation
+ * Simplified consumer of the Global Market Engine.
+ * Ensures the engine is initialized and returns the active asset list.
+ */
 export function usePriceSimulation(): Asset[] {
-  const [assets, setAssets] = useState<Asset[]>(MOCK_ASSETS);
+  const prices = useMarketStore((s) => s.prices);
+  const isInitialized = useMarketStore((s) => s.isInitialized);
+  const init = useMarketStore((s) => s.init);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setAssets((prevAssets) =>
-        prevAssets.map((asset) => {
-          // Simulate smaller, more frequent random price movements
-          const changePercent = (Math.random() - 0.5) * 0.15; // ±0.075% per tick
-          const priceChange = (asset.price * changePercent) / 100;
-          const newPrice = Math.max(asset.price + priceChange, 0.01);
+    if (!isInitialized) {
+      init();
+    }
+  }, [isInitialized, init]);
 
-          return {
-            ...asset,
-            price: parseFloat(newPrice.toFixed(2)),
-            priceChange: parseFloat((asset.priceChange + priceChange).toFixed(2)),
-            priceChangePercent: parseFloat(((newPrice - MOCK_ASSETS.find(a => a.symbol === asset.symbol)!.price) / MOCK_ASSETS.find(a => a.symbol === asset.symbol)!.price * 100).toFixed(2)),
-          };
-        })
-      );
-    }, 1000); // Update every 1 second (faster ticks)
-
-    return () => clearInterval(interval);
-  }, []);
+  const assets = useMemo(() => {
+    return MOCK_ASSETS.map((asset) => {
+      const currentPrice = prices[asset.symbol] || asset.price;
+      const initialPrice = MOCK_ASSETS.find((a) => a.symbol === asset.symbol)!.price;
+      const priceChange = currentPrice - initialPrice;
+      
+      return {
+        ...asset,
+        price: currentPrice,
+        priceChange: parseFloat(priceChange.toFixed(2)),
+        priceChangePercent: parseFloat(
+          ((priceChange / initialPrice) * 100).toFixed(2)
+        ),
+      };
+    });
+  }, [prices]);
 
   return assets;
 }

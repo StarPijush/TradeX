@@ -1,90 +1,166 @@
 "use client";
 
+import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
 import { useTradingStore } from "@/store/useTradingStore";
 import { formatCurrency } from "@/lib/utils/format";
+import { TrendingUp, Menu, Wallet } from "lucide-react";
 
 export default function Navbar() {
   const router = useRouter();
   const balance = useTradingStore((s) => s.balance);
 
-  // Mock guest user for temporary non-auth development
   const guestUser = {
     name: "Guest User",
     image: "https://api.dicebear.com/7.x/avataaars/svg?seed=trader",
   };
 
   return (
-    <nav
-      style={{
-        background: "var(--bg-secondary)",
-        borderBottom: "1px solid var(--border)",
-        position: "sticky",
-        top: 0,
-        zIndex: 100,
-      }}
-    >
-      <div style={{ maxWidth: 1400, margin: "0 auto", padding: "0 16px" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", height: 48 }}>
-          {/* Logo */}
+    <nav className="navbar">
+      <div
+        style={{
+          maxWidth: "var(--max-page-w)",
+          margin: "0 auto",
+          padding: "0 20px",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        {/* Logo — mobile only (desktop uses sidebar) */}
+        <div
+          className="flex md:hidden items-center gap-2.5 cursor-pointer select-none"
+          onClick={() => router.push("/")}
+        >
           <div
-            style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
-            onClick={() => router.push("/")}
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: "linear-gradient(135deg, #58A6FF, #1E72D4)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 0 16px rgba(88,166,255,0.3)",
+            }}
           >
-            <span style={{ color: "var(--text)", fontWeight: 700, fontSize: 15, letterSpacing: "-0.3px" }}>
-              TradeX
+            <TrendingUp size={16} className="text-white" />
+          </div>
+          <span
+            style={{
+              color: "var(--text)",
+              fontWeight: 800,
+              fontSize: 16,
+              letterSpacing: "-0.5px",
+            }}
+          >
+            TradeX
+          </span>
+        </div>
+
+        {/* Desktop spacer */}
+        <div className="hidden md:block" />
+
+        {/* Right side */}
+        <div className="flex items-center gap-4">
+          {/* Balance */}
+          <div
+            className="hidden sm:flex flex-col items-end leading-none"
+            style={{ gap: 3 }}
+          >
+            <span
+              style={{
+                fontSize: 9,
+                fontWeight: 800,
+                textTransform: "uppercase",
+                letterSpacing: "0.12em",
+                color: "var(--text-dim)",
+              }}
+            >
+              Balance
+            </span>
+            <span
+              style={{
+                fontSize: 15,
+                fontWeight: 900,
+                color: "var(--accent)",
+                fontVariantNumeric: "tabular-nums",
+                letterSpacing: "-0.3px",
+              }}
+            >
+              {formatCurrency(balance, true)}
             </span>
           </div>
 
-          {/* Right side */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div 
-              style={{ 
-                display: "flex", 
-                alignItems: "center", 
-                gap: 8, 
-                marginRight: 8,
-                paddingRight: 12,
-                borderRight: "1px solid var(--border)",
-                height: 24,
-              }}
-            >
-              <img 
-                src={guestUser.image} 
-                alt="Profile" 
-                style={{ width: 22, height: 22, borderRadius: "50%" }} 
-              />
-              <span style={{ color: "var(--text)", fontSize: 12, fontWeight: 500 }} className="desktop-only">
-                {guestUser.name}
-              </span>
-            </div>
-            
-            <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-              Balance:{" "}
-              <span style={{ color: "var(--text)", fontWeight: 600 }}>
-                {formatCurrency(balance, true)}
-              </span>
-            </span>
-            <button
-              onClick={() => router.push("/menu")}
+          {/* Divider */}
+          <div className="hidden sm:block h-7 w-px bg-[#1E2633]" />
+
+          {/* User Avatar + Name */}
+          <div className="flex items-center gap-2.5">
+            <div
               style={{
                 width: 32,
                 height: 32,
-                borderRadius: 4,
-                background: "transparent",
-                border: "1px solid var(--border)",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 14,
-                color: "var(--text-muted)",
+                borderRadius: "50%",
+                border: "2px solid var(--border)",
+                overflow: "hidden",
+                flexShrink: 0,
               }}
             >
-              ☰
-            </button>
+              <Image
+                src={guestUser.image}
+                alt="Profile"
+                width={32}
+                height={32}
+                sizes="32px"
+                className="rounded-full"
+              />
+            </div>
+            <span
+              className="hidden lg:block"
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--text-muted)",
+                maxWidth: 100,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {guestUser.name}
+            </span>
           </div>
+
+          {/* Mobile menu button */}
+          <button
+            onClick={() => router.push("/menu")}
+            className="md:hidden"
+            style={{
+              width: 36,
+              height: 36,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              transition: "all 0.15s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = "rgba(88,166,255,0.4)";
+              e.currentTarget.style.color = "var(--text)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = "var(--border)";
+              e.currentTarget.style.color = "var(--text-muted)";
+            }}
+          >
+            <Menu size={18} />
+          </button>
         </div>
       </div>
     </nav>

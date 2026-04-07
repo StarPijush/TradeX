@@ -23,3 +23,12 @@ export function formatPercent(value: number | undefined): string {
   const sign = value >= 0 ? "+" : "";
   return `${sign}${value.toFixed(2)}%`;
 }
+
+export function formatDate(date: Date | string | number): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(date));
+}

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { Position, Trade, TradingState } from "@/types/trading";
+import { Position, Trade, TradingState, Order } from "@/types/trading";
 
 interface StoreState extends TradingState {
   resetAccount: () => void;
@@ -8,14 +8,17 @@ interface StoreState extends TradingState {
 export const useTradingStore = create<StoreState>((set, get) => ({
   balance: 100000,
   positions: [],
+  orders: [],
   trades: [],
   favorites: [],
   xp: 0,
   level: 1,
   streak: 0,
   bestStreak: 0,
+  prices: {},
   setBalance: (balance: number) => set({ balance }),
   setPositions: (positions: Position[]) => set({ positions }),
+  setOrders: (orders: Order[]) => set({ orders }),
   setTrades: (trades: Trade[]) => set({ trades }),
   setFavorites: (favorites: string[]) => set({ favorites }),
   setXP: (xp: number) => set({ xp }),
@@ -27,7 +30,6 @@ export const useTradingStore = create<StoreState>((set, get) => ({
     
     if (newXP >= xpForNextLevel) {
       set({ xp: newXP - xpForNextLevel, level: level + 1 });
-      // Level up logic handled by subscribers or specific UI triggers
     } else {
       set({ xp: newXP });
     }
@@ -49,15 +51,28 @@ export const useTradingStore = create<StoreState>((set, get) => ({
       : [...favorites, symbol];
     set({ favorites: newFavorites });
   },
+  updatePrice: (symbol: string, price: number) => {
+    set((state) => ({
+      prices: {
+        ...state.prices,
+        [symbol]: price,
+      },
+      positions: state.positions.map((p) => 
+        p.symbol === symbol ? { ...p, currentPrice: price } : p
+      )
+    }));
+  },
   resetAccount: () => set({ 
     balance: 100000, 
     positions: [], 
+    orders: [],
     trades: [], 
     favorites: [],
     xp: 0,
     level: 1,
     streak: 0,
-    bestStreak: 0
+    bestStreak: 0,
+    prices: {}
   }),
 }));
 
